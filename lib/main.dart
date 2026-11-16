@@ -134,11 +134,11 @@ class _ClinicShellState extends State<ClinicShell> {
   String _keywordFromPrompt(String prompt) {
     final p = prompt.toLowerCase();
     const candidates = <String, List<String>>{
-      'Restoration': ['restoration', 'restorations', 'restore', 'filling', 'filled', 'composite'],
+      'Restoration': ['restor', 'filling', 'filled', 'composite'],
       'Root Canal': ['root canal', 'rct', 'endodontic'],
-      'Extraction': ['extraction', 'extractions', 'extract', 'remove tooth'],
-      'Implant': ['implant', 'implants'],
-      'FPD': ['fpd', 'crown', 'bridge', 'crowns', 'bridges'],
+      'Extraction': ['extraction', 'extract', 'remove tooth'],
+      'Implant': ['implant'],
+      'FPD': ['fpd', 'crown', 'bridge'],
       'Caries': ['caries', 'cavity', 'cavities', 'decay', 'decayed'],
     };
     for (final entry in candidates.entries) {
@@ -153,7 +153,8 @@ class _ClinicShellState extends State<ClinicShell> {
     final variants = <String>{base};
     if (base.endsWith('s')) variants.add(base.substring(0, base.length - 1));
     const synonyms = <String, List<String>>{
-      'restoration': ['restoration', 'restored', 'restore', 'filling', 'filled', 'composite'],
+      'restoration': ['restor', 'restoration', 'restored', 'restore', 'filling', 'filled', 'composite'],
+      'restor': ['restor', 'restoration', 'restored', 'restore', 'filling', 'filled', 'composite'],
       'root canal': ['root canal', 'rct', 'endodontic'],
       'extraction': ['extraction', 'extract'],
       'implant': ['implant'],
@@ -169,6 +170,51 @@ class _ClinicShellState extends State<ClinicShell> {
     return variants.toList();
   }
 
+  ({String type, String category}) _resolveQueryCategory(String keyword) {
+    final k = keyword.toLowerCase();
+    if (k.contains('restor') || k.contains('fill') || k.contains('composite')) {
+      return (type: 'treatment', category: 'Restoration');
+    }
+    if (k.contains('root') || k.contains('rct') || k.contains('endodont')) {
+      return (type: 'treatment', category: 'Root Canal');
+    }
+    if (k.contains('extract')) return (type: 'treatment', category: 'Extraction');
+    if (k.contains('implant')) return (type: 'treatment', category: 'Implant');
+    if (k.contains('fpd') || k.contains('crown') || k.contains('bridge')) {
+      return (type: 'treatment', category: 'FPD');
+    }
+    if (k.contains('caries') || k.contains('decay') || k.contains('cavit')) {
+      return (type: 'diagnosis', category: 'Decayed');
+    }
+    if (k.contains('missing')) return (type: 'diagnosis', category: 'Missing');
+    if (k.contains('treated')) return (type: 'diagnosis', category: 'Treated');
+    return (type: 'text', category: keyword);
+  }
+
+  String _teethFromPlanText(String planText, String category) {
+    final re = RegExp(RegExp.escape(category) + r'\s*:\s*([0-9][0-9,\s]*)', caseSensitive: false);
+    final m = re.firstMatch(planText);
+    return m?.group(1)?.trim().replaceAll(RegExp(r'\s*,\s*$'), '') ?? '';
+  }
+
+  String _teethFor(String keyword, Map<String, dynamic> row) {
+    final resolved = _resolveQueryCategory(keyword);
+    final odo = OdontogramModel.fromPatientRecord(row);
+    String teeth = '';
+    if (resolved.type == 'treatment') {
+      teeth = (odo.treatmentTeethMap[resolved.category] ?? const <String>[]).join(', ');
+    } else if (resolved.type == 'diagnosis') {
+      teeth = odo.getTeethStringForCategory(resolved.category);
+    }
+    if (teeth.isEmpty) {
+      teeth = _teethFromPlanText(
+        OdontogramModel.cleanDisplayText(row['treatment_plan']?.toString()),
+        resolved.category,
+      );
+    }
+    return teeth;
+  }
+
   Future<void> _runPatientQuery(
     String prompt,
     Map<String, dynamic> result,
@@ -180,10 +226,21 @@ class _ClinicShellState extends State<ClinicShell> {
     var keyword = (qmap['keyword'] ?? '').toString().trim();
     final match = (qmap['match'] ?? 'any').toString().trim().toLowerCase();
     if (keyword.isEmpty) keyword = _keywordFromPrompt(prompt);
+
+    final named = (qmap['patient_name'] ?? '').toString().trim();
+    final promptName = _nameFromPrompt(prompt);
+    final nameFilter = named.isNotEmpty ? named : promptName;
+    if (nameFilter.isNotEmpty && keyword.isEmpty) {
+      await _runPatientLookup(nameFilter, reply);
+      return;
+    }
+
     final variants = _queryVariants(keyword);
-    final rows = await Supabase.instance.client
-        .from('patients')
-        .select('phone, first_name, last_name, diagnosis, treatment_plan');
+    final rows = nameFilter.isNotEmpty
+        ? await _findPatientsByName(nameFilter)
+        : await Supabase.instance.client
+            .from('patients')
+            .select('phone, first_name, last_name, diagnosis, treatment_plan');
     final matches = <String>[];
     for (final row in rows) {
       final plan = (row['treatment_plan'] ?? '').toString().toLowerCase();
@@ -193,15 +250,17 @@ class _ClinicShellState extends State<ClinicShell> {
           : match == 'diagnosis'
               ? diag
               : '$plan $diag';
-      final hit = variants.isEmpty
+      final teeth = keyword.isEmpty ? '' : _teethFor(keyword, row);
+      final textHit = variants.isEmpty
           ? haystack.trim().isNotEmpty
           : variants.any((v) => v.isNotEmpty && haystack.contains(v));
-      if (!hit) continue;
+      if (teeth.isEmpty && !textHit) continue;
       final name = [
         row['first_name']?.toString() ?? '',
         row['last_name']?.toString() ?? '',
       ].where((e) => e.trim().isNotEmpty).join(' ').trim();
-      matches.add(name.isEmpty ? (row['phone']?.toString() ?? 'Unknown') : name);
+      final display = name.isEmpty ? (row['phone']?.toString() ?? 'Unknown') : name;
+      matches.add(teeth.isEmpty ? display : '$display — $keyword: $teeth');
     }
     final label = keyword.isEmpty ? 'patients' : keyword;
     final summary = '${matches.length} patient(s) with $label';
@@ -212,7 +271,7 @@ class _ClinicShellState extends State<ClinicShell> {
       builder: (ctx) => AlertDialog(
         title: const Text('Patient query'),
         content: SizedBox(
-          width: 440,
+          width: 460,
           child: SingleChildScrollView(
             child: Column(
               mainAxisSize: MainAxisSize.min,
@@ -224,7 +283,7 @@ class _ClinicShellState extends State<ClinicShell> {
                   const Text('No matching patients.', style: TextStyle(color: Colors.grey))
                 else
                   ...shown.map((name) => Padding(
-                        padding: const EdgeInsets.only(bottom: 4),
+                        padding: const EdgeInsets.only(bottom: 5),
                         child: Text('• $name', style: const TextStyle(fontSize: 13)),
                       )),
                 if (matches.length > shown.length)
@@ -233,6 +292,137 @@ class _ClinicShellState extends State<ClinicShell> {
                     child: Text('+${matches.length - shown.length} more',
                         style: const TextStyle(fontSize: 12, color: Colors.grey)),
                   ),
+              ],
+            ),
+          ),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Close')),
+        ],
+      ),
+    );
+  }
+
+  String _nameFromPrompt(String prompt) {
+    final re = RegExp(
+      r'(?:findings|details|detail|records?|information|info|chart|history|treatment plan|treatment|diagnosis|appointment|status)\s+(?:of|for|in|about)\s+([A-Za-z][A-Za-z .\x27-]{0,40})',
+      caseSensitive: false,
+    );
+    RegExpMatch? m = re.firstMatch(prompt);
+    if (m == null) {
+      final re2 = RegExp(
+        r'(?:show|tell me about|what about|lookup|look up|get|open)\s+(?:the\s+)?([A-Za-z][A-Za-z .\x27-]{0,40})',
+        caseSensitive: false,
+      );
+      m = re2.firstMatch(prompt);
+    }
+    if (m == null) return '';
+    var candidate = m.group(1)!.trim();
+    candidate = candidate
+        .replaceAll(RegExp(
+          r'\b(findings|details|detail|records?|treatment|plan|diagnosis|appointment|please|now)\b.*$',
+          caseSensitive: false,
+        ), '')
+        .replaceAll(RegExp(r'[?.!,]+\s*$'), '')
+        .trim();
+    final tokens = candidate.split(RegExp(r'\s+')).where((t) => t.isNotEmpty).toList();
+    if (tokens.isEmpty || tokens.length > 3) return '';
+    return candidate;
+  }
+
+  Future<List<Map<String, dynamic>>> _findPatientsByName(String name) async {
+    final tokens = name.toLowerCase().trim().split(RegExp(r'\s+')).where((t) => t.isNotEmpty).toList();
+    if (tokens.isEmpty) return [];
+    List<Map<String, dynamic>> rows = [];
+    try {
+      final ors = <String>[];
+      for (final t in tokens) {
+        final esc = t.replaceAll('%', '').replaceAll(',', '').replaceAll('*', '');
+        if (esc.isEmpty) continue;
+        ors.add('first_name.ilike.%$esc%');
+        ors.add('last_name.ilike.%$esc%');
+      }
+      if (ors.isNotEmpty) {
+        final res = await Supabase.instance.client.from('patients').select().or(ors.join(','));
+        rows = List<Map<String, dynamic>>.from(res);
+      }
+    } catch (_) {
+      rows = [];
+    }
+    if (rows.isEmpty) {
+      try {
+        final res = await Supabase.instance.client.from('patients').select();
+        rows = List<Map<String, dynamic>>.from(res);
+      } catch (_) {
+        return [];
+      }
+    }
+    return rows.where((row) {
+      final full = '${row['first_name'] ?? ''} ${row['last_name'] ?? ''}'.toLowerCase();
+      return tokens.every((t) => full.contains(t));
+    }).toList();
+  }
+
+  Future<void> _runPatientLookup(String name, String reply) async {
+    final rows = await _findPatientsByName(name);
+    if (!mounted) return;
+    if (rows.isEmpty) {
+      await showDialog<void>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: Text('Patient: $name'),
+          content: Text('No patient found matching "$name".'),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Close')),
+          ],
+        ),
+      );
+      return;
+    }
+    final blocks = <String>[];
+    for (final row in rows.take(10)) {
+      final fullName = [
+        row['first_name']?.toString() ?? '',
+        row['last_name']?.toString() ?? '',
+      ].where((e) => e.trim().isNotEmpty).join(' ').trim();
+      final phone = (row['phone'] ?? '').toString();
+      final appt = (row['appointment'] ?? '').toString();
+      final odo = OdontogramModel.fromPatientRecord(row);
+      final findings = odo.toDiagnosisSummaryString();
+      final treatment = odo.toTreatmentPlanSummaryString();
+      final diagText = OdontogramModel.cleanDisplayText(row['diagnosis']?.toString());
+      final planText = OdontogramModel.cleanDisplayText(row['treatment_plan']?.toString());
+      final findingDisplay = (diagText.isNotEmpty && diagText != 'Oral cavity clinically normal.')
+          ? diagText
+          : findings;
+      final planDisplay = planText.isNotEmpty ? planText : treatment;
+      blocks.add([
+        fullName.isEmpty ? (phone.isEmpty ? 'Unknown patient' : phone) : fullName,
+        if (phone.isNotEmpty) 'Phone: $phone',
+        if (appt.isNotEmpty) 'Appointment: $appt',
+        'Findings: ${findingDisplay.isEmpty ? 'None recorded' : findingDisplay}',
+        'Treatment plan: ${planDisplay.isEmpty ? 'None recorded' : planDisplay}',
+      ].join('\n'));
+    }
+    await showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text('Patient: $name'),
+        content: SizedBox(
+          width: 480,
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                if (reply.isNotEmpty && rows.length == 1) ...[
+                  Text(reply),
+                  const Divider(height: 20),
+                ],
+                ...blocks.map((b) => Padding(
+                      padding: const EdgeInsets.only(bottom: 12),
+                      child: Text(b, style: const TextStyle(fontSize: 13, height: 1.4)),
+                    )),
               ],
             ),
           ),
@@ -278,9 +468,26 @@ class _ClinicShellState extends State<ClinicShell> {
       }
       if (mounted) setState(() => _aiStatus = 'Thinking...');
       final result = await _ai.interpretAgentPrompt(prompt);
-      final action = (result['action'] ?? 'diagnose').toString();
+      var action = (result['action'] ?? 'diagnose').toString();
       final reply = (result['reply'] ?? '').toString();
       final patientsRaw = result['patients'] is List ? result['patients'] as List : const [];
+
+      final promptLower = prompt.toLowerCase();
+      final promptName = _nameFromPrompt(prompt);
+      final fallbackKeyword = _keywordFromPrompt(prompt);
+      final hasMutation = RegExp(
+        r'\b(create|add|update|change|set|mark|delete|remove|diagnose|record|save|schedule|book)\b',
+      ).hasMatch(promptLower);
+      final looksLikeQuery = RegExp(
+        r'\b(how many|how much|which|what are|what is|list|who|count|are there|do we have|show me|tell me|give me|findings|teeth)\b',
+      ).hasMatch(promptLower);
+      if (action == 'diagnose' && !hasMutation) {
+        if (promptName.isNotEmpty) {
+          action = 'patient_lookup';
+        } else if (fallbackKeyword.isNotEmpty && looksLikeQuery) {
+          action = 'query_patients';
+        }
+      }
 
       if (action == 'delete_patient') {
         var deletedCount = 0;
@@ -327,6 +534,19 @@ class _ClinicShellState extends State<ClinicShell> {
         if (deletedCount > 0) setState(() => _index = 1);
       } else if (action == 'query_patients') {
         await _runPatientQuery(prompt, result, reply);
+      } else if (action == 'patient_lookup') {
+        var name = result['query'] is Map
+            ? (result['query'] as Map)['patient_name']?.toString().trim() ?? ''
+            : '';
+        if (name.isEmpty) name = promptName;
+        if (name.isEmpty) {
+          if (!mounted) return;
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Which patient? Include the patient name in your question.')),
+          );
+        } else {
+          await _runPatientLookup(name, reply);
+        }
       } else {
         var savedCount = 0;
         var failedSaves = 0;
@@ -336,19 +556,6 @@ class _ClinicShellState extends State<ClinicShell> {
               ? Map<String, dynamic>.from(entry['patient'] as Map)
               : <String, dynamic>{};
           final changes = entry['changes'] is List ? entry['changes'] as List : const [];
-
-          final odo = OdontogramModel();
-          for (final c in changes) {
-            if (c is! Map) continue;
-            final tooth = _normalizeTooth(c['tooth']);
-            final cat = _normalizeCategory(c['category']);
-            if (RegExp(r'^(1[1-8]|2[1-8]|3[1-8]|4[1-8])$').hasMatch(tooth) &&
-                cat.isNotEmpty && cat != 'Normal') {
-              final existing = odo.getTeethStringForCategory(cat);
-              final merged = existing.isEmpty ? tooth : '$existing, $tooth';
-              odo.setTeethForCategory(cat, merged);
-            }
-          }
 
           final first = (pmap['first_name'] ?? '').toString().trim();
           final last = (pmap['last_name'] ?? '').toString().trim();
@@ -361,6 +568,43 @@ class _ClinicShellState extends State<ClinicShell> {
           final complaint = (pmap['chief_complaint'] ?? '').toString().trim();
           final history = (pmap['medical_history'] ?? '').toString().trim();
           final diagField = (pmap['diagnosis'] ?? '').toString().trim();
+
+          // Resolve existing patient by phone or name so updates/chart edits
+          // modify the existing record instead of creating a duplicate.
+          Map<String, dynamic>? existingRow;
+          try {
+            if (aiPhone.isNotEmpty) {
+              final res = await Supabase.instance.client
+                  .from('patients')
+                  .select()
+                  .eq('phone', aiPhone)
+                  .limit(1);
+              if (res.isNotEmpty) existingRow = Map<String, dynamic>.from(res.first);
+            }
+            if (existingRow == null && (first.isNotEmpty || last.isNotEmpty)) {
+              var q = Supabase.instance.client.from('patients').select();
+              if (first.isNotEmpty) q = q.ilike('first_name', first);
+              if (last.isNotEmpty) q = q.ilike('last_name', last);
+              final res = await q.limit(1);
+              if (res.isNotEmpty) existingRow = Map<String, dynamic>.from(res.first);
+            }
+          } catch (_) {}
+
+          final odo = existingRow != null
+              ? OdontogramModel.fromPatientRecord(existingRow)
+              : OdontogramModel();
+          for (final c in changes) {
+            if (c is! Map) continue;
+            final tooth = _normalizeTooth(c['tooth']);
+            final cat = _normalizeCategory(c['category']);
+            if (RegExp(r'^(1[1-8]|2[1-8]|3[1-8]|4[1-8])$').hasMatch(tooth) &&
+                cat.isNotEmpty && cat != 'Normal') {
+              final existingTeeth = odo.getTeethStringForCategory(cat);
+              final merged = existingTeeth.isEmpty ? tooth : '$existingTeeth, $tooth';
+              odo.setTeethForCategory(cat, merged);
+            }
+          }
+
           final odoDiag = odo.toDiagnosisSummaryString();
           final hasData = first.isNotEmpty || aiPhone.isNotEmpty || complaint.isNotEmpty ||
               history.isNotEmpty || diagField.isNotEmpty || changes.isNotEmpty;
@@ -369,26 +613,51 @@ class _ClinicShellState extends State<ClinicShell> {
                first.isNotEmpty || aiPhone.isNotEmpty || changes.isNotEmpty);
           if (!shouldSave) continue;
 
-          final diagnosis = [
+          final newDiagnosis = [
             if (complaint.isNotEmpty) 'Complaint: $complaint',
             if (history.isNotEmpty) 'History: $history',
             if (diagField.isNotEmpty) diagField,
-            if (odoDiag.isNotEmpty && odoDiag != 'Oral cavity clinically normal.') odoDiag,
+            if (changes.isNotEmpty && odoDiag.isNotEmpty && odoDiag != 'Oral cavity clinically normal.') odoDiag,
           ].where((e) => e.trim().isNotEmpty).join('\n');
+          final existingDiagnosis = existingRow != null
+              ? OdontogramModel.cleanDisplayText(existingRow['diagnosis']?.toString())
+              : '';
+          final diagnosis = newDiagnosis.isNotEmpty
+              ? newDiagnosis
+              : (existingDiagnosis.isNotEmpty ? existingDiagnosis : reply);
+
           var phone = aiPhone;
+          if (phone.isEmpty && existingRow != null) {
+            phone = (existingRow['phone'] ?? '').toString().trim();
+          }
           if (phone.isEmpty) phone = 'AI-${DateTime.now().millisecondsSinceEpoch}-$savedCount';
+
           final apptRaw = (pmap['appointment'] ?? '').toString().trim();
-          final appointment = apptRaw.isEmpty ? 'AI Created' : _normalizeAppointment(apptRaw);
+          final existingAppt = existingRow != null ? (existingRow['appointment'] ?? '').toString().trim() : '';
+          final appointment = apptRaw.isNotEmpty
+              ? _normalizeAppointment(apptRaw)
+              : (existingAppt.isNotEmpty ? existingAppt : 'AI Created');
+
+          final existingPlan = existingRow != null ? (existingRow['treatment_plan']?.toString() ?? '') : '';
+          final treatmentPlanValue = (changes.isNotEmpty || existingRow == null || existingPlan.isEmpty)
+              ? odo.embedInString(odo.toTreatmentPlanSummaryString())
+              : existingPlan;
+
+          final existingFirst = existingRow != null ? (existingRow['first_name']?.toString().trim() ?? '') : '';
+          final existingLast = existingRow != null ? (existingRow['last_name']?.toString().trim() ?? '') : '';
+          final finalSex = sex.isNotEmpty ? sex : (existingRow != null ? (existingRow['sex']?.toString().trim() ?? '') : '');
+          final existingAge = existingRow != null ? int.tryParse(existingRow['age']?.toString() ?? '') : null;
+          final finalAge = age ?? existingAge;
 
           try {
             await Supabase.instance.client.from('patients').upsert({
               'phone': phone,
-              'first_name': first.isEmpty ? 'AI' : first,
-              'last_name': last,
-              'age': ?age,
-              if (sex.isNotEmpty) 'sex': sex,
+              'first_name': first.isNotEmpty ? first : (existingFirst.isNotEmpty ? existingFirst : 'AI'),
+              'last_name': last.isNotEmpty ? last : existingLast,
+              'age': ?finalAge,
+              if (finalSex.isNotEmpty) 'sex': finalSex,
               'diagnosis': diagnosis.isEmpty ? reply : diagnosis,
-              'treatment_plan': odo.embedInString(odo.toTreatmentPlanSummaryString()),
+              'treatment_plan': treatmentPlanValue,
               'appointment': appointment,
               'clinic': clinic,
             }, onConflict: 'phone');
@@ -399,6 +668,24 @@ class _ClinicShellState extends State<ClinicShell> {
         }
 
         if (!mounted) return;
+        if (action == 'diagnose' && savedCount == 0 && reply.isNotEmpty) {
+          await showDialog<void>(
+            context: context,
+            builder: (ctx) => AlertDialog(
+              title: const Text('AI diagnosis'),
+              content: SizedBox(
+                width: 460,
+                child: SingleChildScrollView(
+                  child: Text(reply, style: const TextStyle(fontSize: 14, height: 1.4)),
+                ),
+              ),
+              actions: [
+                TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Close')),
+              ],
+            ),
+          );
+          return;
+        }
         var msg = reply.isEmpty ? 'AI action completed' : reply;
         if (savedCount > 0) msg = '$msg (saved $savedCount)';
         if (failedSaves > 0) msg = '$msg (could not save $failedSaves - no internet/server)';

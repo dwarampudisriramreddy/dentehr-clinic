@@ -620,14 +620,39 @@ class _PatientVisitScreenState extends State<PatientVisitScreen> {
         }
       }
       if (mounted) {
+        final isDiagnose = (result['action'] ?? '').toString() == 'diagnose';
         setState(() {
+          if (applied == 0 &&
+              isDiagnose &&
+              reply.isNotEmpty &&
+              _diagnosisController.text.trim().isEmpty) {
+            _diagnosisController.text = reply;
+          }
           _aiLoading = false;
           _aiStatus = '';
         });
-        final msg = reply.isEmpty ? 'AI chart updated' : reply;
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(applied > 0 ? '$msg (applied $applied)' : msg)),
-        );
+        if (applied == 0 && reply.isNotEmpty) {
+          await showDialog<void>(
+            context: context,
+            builder: (ctx) => AlertDialog(
+              title: const Text('AI diagnosis'),
+              content: SizedBox(
+                width: 440,
+                child: SingleChildScrollView(
+                  child: Text(reply, style: const TextStyle(fontSize: 14, height: 1.4)),
+                ),
+              ),
+              actions: [
+                TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Close')),
+              ],
+            ),
+          );
+        } else {
+          final msg = reply.isEmpty ? 'AI chart updated' : reply;
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text(applied > 0 ? '$msg (applied $applied)' : msg)),
+          );
+        }
       }
     } catch (e) {
       if (mounted) {
