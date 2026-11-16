@@ -163,8 +163,14 @@ class _ClinicShellState extends State<ClinicShell> {
           history.isNotEmpty ||
           diagField.isNotEmpty ||
           changes.isNotEmpty;
+      final shouldSave = hasPatientData &&
+          (action == 'create_patient' ||
+              action == 'update_patient' ||
+              first.isNotEmpty ||
+              aiPhone.isNotEmpty);
 
-      if ((action == 'create_patient' || action == 'update_patient') && hasPatientData) {
+      var saved = false;
+      if (shouldSave) {
         final diagnosis = [
           if (complaint.isNotEmpty) 'Complaint: $complaint',
           if (history.isNotEmpty) 'History: $history',
@@ -185,6 +191,7 @@ class _ClinicShellState extends State<ClinicShell> {
             'appointment': (patient['appointment'] ?? 'AI Created').toString(),
             'clinic': clinic,
           }, onConflict: 'phone');
+          saved = true;
         } catch (_) {
           if (!mounted) return;
           ScaffoldMessenger.of(context).showSnackBar(
@@ -195,11 +202,17 @@ class _ClinicShellState extends State<ClinicShell> {
       }
 
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(reply.isEmpty ? 'AI action completed' : reply)),
-      );
-      if (_index == 1 || _index == 0) {
-        setState(() {}); // refresh current context; lists refetch on open/manual refresh
+      final baseReply = reply.isEmpty ? 'AI action completed' : reply;
+      final msg = saved
+          ? '$baseReply (saved)'
+          : (!shouldSave && (action == 'create_patient' || action == 'update_patient' || changes.isNotEmpty)
+              ? '$baseReply (not saved - missing patient details/action=$action)'
+              : baseReply);
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+      if (saved) {
+        setState(() => _index = 1); // show Patients list (refetches on build/init)
+      } else if (_index == 1 || _index == 0) {
+        setState(() {});
       }
     } catch (e) {
       if (mounted) {
@@ -540,8 +553,14 @@ class _ClinicPatientsScreenState extends State<ClinicPatientsScreen> {
           history.isNotEmpty ||
           diagField.isNotEmpty ||
           changes.isNotEmpty;
+      final shouldSave = hasPatientData &&
+          (action == 'create_patient' ||
+              action == 'update_patient' ||
+              first.isNotEmpty ||
+              aiPhone.isNotEmpty);
 
-      if ((action == 'create_patient' || action == 'update_patient') && hasPatientData) {
+      var saved = false;
+      if (shouldSave) {
         final diagnosis = [
           if (complaint.isNotEmpty) 'Complaint: $complaint',
           if (history.isNotEmpty) 'History: $history',
@@ -564,6 +583,7 @@ class _ClinicPatientsScreenState extends State<ClinicPatientsScreen> {
             'clinic': clinic,
           }, onConflict: 'phone');
           await _fetchPatients();
+          saved = true;
         } catch (_) {
           if (!mounted) return;
           ScaffoldMessenger.of(context).showSnackBar(
@@ -571,14 +591,16 @@ class _ClinicPatientsScreenState extends State<ClinicPatientsScreen> {
           );
           return;
         }
-      } else if (action == 'odontogram' || action == 'update') {
-        // fallback: show reply; odontogram-only without target patient needs context
       }
 
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(reply.isEmpty ? 'AI action completed' : reply)),
-        );
+        final baseReply = reply.isEmpty ? 'AI action completed' : reply;
+        final msg = saved
+            ? '$baseReply (saved)'
+            : (!shouldSave && (action == 'create_patient' || action == 'update_patient' || changes.isNotEmpty)
+                ? '$baseReply (not saved - missing patient details/action=$action)'
+                : baseReply);
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
       }
     } catch (e) {
       if (mounted) {

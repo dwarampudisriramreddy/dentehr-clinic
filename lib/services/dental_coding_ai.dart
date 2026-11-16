@@ -8,34 +8,66 @@ class DentalCodingAI {
 
   InferenceModel? _model;
   String? _modelPath;
+  final List<String> debugLogs = [];
+  String debugStatus = '';
 
   bool get isReady => _model != null;
   String? get modelPath => _modelPath;
   String? get modelName => _modelPath?.split(RegExp(r'[\\/]')).last;
 
-  Future<void> initModel({required String modelPath}) async {
-    if (!_initialized) {
-      await FlutterEdgeAi.initialize(
-        inferenceEngines: const [LiteRtLmEngine()],
-      );
-      _initialized = true;
-    }
-
-    if (_model != null) {
-      await disposeModel();
-    }
-
-    await FlutterEdgeAi.installModel(
-      modelType: ModelType.gemmaIt,
-      fileType: ModelFileType.litertlm,
-    ).fromFile(modelPath).install();
-
-    _model = await FlutterEdgeAi.getActiveModel(
-      maxTokens: 512,
-      preferredBackend: PreferredBackend.gpu,
-    );
-    _modelPath = modelPath;
+  void _log(String msg, [void Function(String)? onLog]) {
+    final line = '[${DateTime.now().toIso8601String().substring(11, 19)}] $msg';
+    debugLogs.add(line);
+    debugStatus = msg;
+    onLog?.call(line);
   }
+
+  Future<void> initModel({
+    required String modelPath,
+    void Function(String)? onLog,
+  }) async {
+    debugLogs.clear();
+    debugStatus = '';
+    try {
+      _log('Selected model: $modelPath', onLog);
+      if (!_initialized) {
+        _log('Initializing FlutterEdgeAi (LiteRT-LM engine)...', onLog);
+        await FlutterEdgeAi.initialize(
+          inferenceEngines: const [LiteRtLmEngine()],
+        );
+        _initialized = true;
+        _log('Engine initialized', onLog);
+      } else {
+        _log('Engine already initialized', onLog);
+      }
+
+      if (_model != null) {
+        _log('Disposing previous model...', onLog);
+        await disposeModel();
+      }
+
+      _log('Installing model from file (this may take a while for large models)...', onLog);
+      await FlutterEdgeAi.installModel(
+        modelType: ModelType.gemmaIt,
+        fileType: ModelFileType.litertlm,
+      ).fromFile(modelPath).install();
+      _log('Model installed', onLog);
+
+      _log('Activating model (maxTokens=512, backend=gpu)...', onLog);
+      _model = await FlutterEdgeAi.getActiveModel(
+        maxTokens: 512,
+        preferredBackend: PreferredBackend.gpu,
+      );
+      _modelPath = modelPath;
+      _log('Model ready: ${modelName ?? pathName(modelPath)}', onLog);
+    } catch (e, st) {
+      _log('ERROR: $e', onLog);
+      _log('Stack: ${st.toString().split('\n').take(4).join(' | ')}', onLog);
+      rethrow;
+    }
+  }
+
+  static String pathName(String p) => p.split(RegExp(r'[\\/]')).last;
 
   Future<String> generate(String prompt, {int maxTokens = 512}) async {
     final model = _model;
@@ -139,7 +171,9 @@ class DentalCodingAI {
   }
 
   Future<void> disposeModel() async {
-    await _model?.close();
+    try {
+      await _model?.close();
+    } catch (_) {}
     _model = null;
     _modelPath = null;
   }

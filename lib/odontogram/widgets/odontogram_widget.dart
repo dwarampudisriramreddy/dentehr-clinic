@@ -140,7 +140,7 @@ class _OdontogramWidgetState extends State<OdontogramWidget> {
   Future<void> _pickModelFile() async {
     setState(() {
       _aiLoading = true;
-      _aiReply = 'Selecting model file...';
+      _aiReply = null;
     });
     try {
       final result = await FilePicker.platform.pickFiles(
@@ -166,16 +166,20 @@ class _OdontogramWidgetState extends State<OdontogramWidget> {
         }
         return;
       }
-      if (mounted) {
-        setState(() => _aiReply = 'Loading model: ${path.split(RegExp(r"[\\/]")).last} ...');
-      }
-      await _ai.initModel(modelPath: path);
+      await _ai.initModel(
+        modelPath: path,
+        onLog: (msg) {
+          if (mounted) setState(() => _aiReply = msg);
+        },
+      );
       if (mounted) {
         setState(() => _aiReply =
             'AI ready: ${_ai.modelName}. Type a prompt to diagnose or update the odontogram.');
       }
     } catch (e) {
-      if (mounted) setState(() => _aiReply = 'Failed to load model: $e');
+      if (mounted) {
+        setState(() => _aiReply = 'Failed to load model: $e');
+      }
     } finally {
       if (mounted) setState(() => _aiLoading = false);
     }
@@ -393,19 +397,54 @@ class _OdontogramWidgetState extends State<OdontogramWidget> {
                 ),
               ],
             ),
-            if (_aiReply != null) ...[
+            if (_aiReply != null || _ai.debugLogs.isNotEmpty) ...[
               const SizedBox(height: 8),
-              Container(
-                width: double.infinity,
-                padding: const EdgeInsets.all(10),
-                decoration: BoxDecoration(
-                  color: Colors.white,
-                  borderRadius: BorderRadius.circular(6),
-                  border: Border.all(color: Colors.indigo.shade100),
+              if (_aiReply != null)
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(10),
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(6),
+                    border: Border.all(color: Colors.indigo.shade100),
+                  ),
+                  child: SelectableText(_aiReply!,
+                      style: const TextStyle(fontSize: 12, height: 1.4)),
                 ),
-                child: SelectableText(_aiReply!,
-                    style: const TextStyle(fontSize: 12, height: 1.4)),
-              ),
+              if (_ai.debugLogs.isNotEmpty) ...[
+                const SizedBox(height: 6),
+                ExpansionTile(
+                  tilePadding: EdgeInsets.zero,
+                  dense: true,
+                  initiallyExpanded: _aiLoading,
+                  title: Text(
+                    'Debug log (${_ai.debugLogs.length})',
+                    style: TextStyle(fontSize: 11, color: Colors.grey.shade700, fontWeight: FontWeight.w600),
+                  ),
+                  children: [
+                    Container(
+                      width: double.infinity,
+                      constraints: const BoxConstraints(maxHeight: 180),
+                      padding: const EdgeInsets.all(8),
+                      decoration: BoxDecoration(
+                        color: Colors.black87,
+                        borderRadius: BorderRadius.circular(6),
+                      ),
+                      child: SingleChildScrollView(
+                        child: SelectableText(
+                          _ai.debugLogs.join('\n'),
+                          style: const TextStyle(
+                            fontSize: 10,
+                            height: 1.3,
+                            color: Colors.greenAccent,
+                            fontFamily: 'monospace',
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
             ],
           ],
         ),
