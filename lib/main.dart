@@ -323,6 +323,20 @@ class _ClinicShellState extends State<ClinicShell> {
       );
       m = re2.firstMatch(prompt);
     }
+    if (m == null) {
+      final re3 = RegExp(
+        r'(?:dmft|dmfs)\s+(?:index\s+)?(?:of|for|in|about)\s+([A-Za-z][A-Za-z .\x27-]{0,40})',
+        caseSensitive: false,
+      );
+      m = re3.firstMatch(prompt);
+    }
+    if (m == null) {
+      final re4 = RegExp(
+        r'([A-Za-z][A-Za-z.\x27-]{0,30})(?:\x27s|s\x27)\s+(?:dmft|dmfs)',
+        caseSensitive: false,
+      );
+      m = re4.firstMatch(prompt);
+    }
     if (m == null) return '';
     var candidate = m.group(1)!.trim();
     candidate = candidate

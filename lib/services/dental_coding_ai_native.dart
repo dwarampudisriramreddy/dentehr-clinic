@@ -145,6 +145,7 @@ class DentalCodingAI {
       'Allowed categories: Decayed,Missing,Treated,Pulpitis,Abscess,Fracture,Periodontitis,Attrition,Abrasion,Root Stump,Impacted,Mobility,Recession,Pocket,Normal. '
       'If the user asks a question about EXISTING patients (e.g. "how many patients need restorations", "who has implants", "count patients with caries"), set action to "query_patients", set query.keyword to the treatment/diagnosis term (e.g. "Restoration", "Implant", "Caries"), set query.match to "treatment_plan" or "diagnosis" (or "any"), and set "patients":[]. '
       'If the user says "restorations", use keyword "Restoration"; "root canal" use "Root Canal"; "extraction" use "Extraction"; "crown/bridge" use "FPD". '
+      'If the user asks for DMFT/DMFS (e.g. "what is the DMFT of Suresh", "which patients have high DMFT"), use action "query_patients" with query.keyword "DMFT" (or "patient_lookup" with query.patient_name when a specific patient is named). '
       'If the user asks about a SPECIFIC named patient (e.g. "what are the findings in Suresh", "show Suresh treatment plan", "details of Suresh", "what teeth need restoration for Suresh"), set action to "patient_lookup", set query.patient_name to that name, and set "patients":[]. '
       'If multiple patients are mentioned, return one entry per patient and assign ONLY that patient\'s findings/teeth to their changes. '
       'Do not mix different patients\' findings. '
