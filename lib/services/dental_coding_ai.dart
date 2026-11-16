@@ -125,31 +125,44 @@ class DentalCodingAI {
     return json;
   }
 
-  /// Agent mode: interpret a natural-language command that may create/update a
-  /// patient and modify odontogram findings.
+  /// Agent mode: interpret a natural-language command that may create/update
+  /// one or more patients and modify odontogram findings.
   /// Returns {"action":"create_patient|update_patient|odontogram|diagnose",
-  /// "reply":"...", "patient":{first_name,last_name,phone,age,sex,chief_complaint,
-  /// medical_history,diagnosis,appointment,clinic}, "changes":[{tooth,category},...]}
+  /// "reply":"...", "patients":[{"patient":{...},"changes":[{tooth,category},...]}]}
   Future<Map<String, dynamic>> interpretAgentPrompt(String prompt) async {
+    final now = DateTime.now();
+    String two(int n) => n.toString().padLeft(2, '0');
+    final nowStr = '${now.year}-${two(now.month)}-${two(now.day)} ${two(now.hour)}:${two(now.minute)}';
     final raw = await generate(
-      'You are an agentic dental clinic assistant. Convert the user request into an action plan.\n'
+      'You are an agentic dental clinic assistant. Current datetime: $nowStr.\n'
+      'Convert the user request into an action plan.\n'
       'User request: "$prompt"\n'
       'Return ONLY raw JSON, no markdown. Schema:\n'
-      '{"action":"create_patient|update_patient|odontogram|diagnose","reply":"short confirmation or diagnosis",'
-      '"patient":{"first_name":"","last_name":"","phone":"","age":"","sex":"","chief_complaint":"","medical_history":"","diagnosis":"","appointment":"","clinic":""},'
-      '"changes":[{"tooth":"31","category":"Pulpitis"}]}\n'
+      '{"action":"create_patient|update_patient|odontogram|diagnose","reply":"short confirmation/diagnosis",'
+      '"patients":[{"patient":{"first_name":"","last_name":"","phone":"","age":"","sex":"","chief_complaint":"","medical_history":"","diagnosis":"","appointment":"","clinic":""},'
+      '"changes":[{"tooth":"31","category":"Pulpitis"}]}]}\n'
       'Rules: use FDI tooth numbers 11-18,21-28,31-38,41-48. '
       'Allowed categories: Decayed,Missing,Treated,Pulpitis,Abscess,Fracture,Periodontitis,Attrition,Abrasion,Root Stump,Impacted,Mobility,Recession,Pocket,Normal. '
-      'If creating a patient, fill known patient fields and include relevant complaint/history in patient fields. '
-      'If request implies chart/diagnosis changes for teeth, include them in changes. '
-      'Use empty strings for unknown patient fields and [] for no changes.\nJSON:',
-      maxTokens: 768,
+      'If multiple patients are mentioned, return one entry per patient and assign ONLY that patient\'s findings/teeth to their changes. '
+      'Do not mix different patients\' findings. '
+      'If appointment/timing is mentioned (now, in 5 minutes, tomorrow, specific time), set patient.appointment to a concrete "YYYY-MM-DD HH:mm" value computed from current datetime. '
+      'If creating/updating, fill known patient fields. Use empty strings for unknown fields and [] for no changes.\nJSON:',
+      maxTokens: 1024,
     );
     final json = _sanitizeJson(raw);
     json.putIfAbsent('action', () => 'diagnose');
     json.putIfAbsent('reply', () => raw.trim());
-    json.putIfAbsent('patient', () => <String, dynamic>{});
-    json.putIfAbsent('changes', () => <dynamic>[]);
+
+    // Backward compatibility: normalize single-patient shape to patients[]
+    if (json['patients'] is! List) {
+      final p = json['patient'] is Map
+          ? Map<String, dynamic>.from(json['patient'] as Map)
+          : <String, dynamic>{};
+      final c = json['changes'] is List ? json['changes'] as List : <dynamic>[];
+      json['patients'] = [
+        {'patient': p, 'changes': c}
+      ];
+    }
     return json;
   }
 

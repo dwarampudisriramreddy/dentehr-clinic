@@ -552,7 +552,19 @@ class _PatientVisitScreenState extends State<PatientVisitScreen> {
     );
   }
 
+  String _formatAppt(DateTime dt) {
+    String two(int n) => n.toString().padLeft(2, '0');
+    return '${dt.year}-${two(dt.month)}-${two(dt.day)} ${two(dt.hour)}:${two(dt.minute)}';
+  }
+
+  void _setAppointment(DateTime dt, {String? label}) {
+    setState(() {
+      _appointmentController.text = label == null ? _formatAppt(dt) : '$label (${_formatAppt(dt)})';
+    });
+  }
+
   Widget _buildFindingsStep() {
+    final appt = _appointmentController.text.trim();
     return SafeArea(
       child: Column(
         children: [
@@ -560,21 +572,44 @@ class _PatientVisitScreenState extends State<PatientVisitScreen> {
             margin: const EdgeInsets.fromLTRB(12, 8, 12, 4),
             child: Padding(
               padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-              child: Row(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const Icon(Icons.person_outline, size: 18, color: kVisitNavy),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: Text(
-                      _patientLabel(),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13),
-                    ),
+                  Row(
+                    children: [
+                      const Icon(Icons.person_outline, size: 18, color: kVisitNavy),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          _patientLabel(),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13),
+                        ),
+                      ),
+                      const Text(
+                        'Mark findings on the chart',
+                        style: TextStyle(fontSize: 11, color: Colors.grey),
+                      ),
+                    ],
                   ),
-                  const Text(
-                    'Mark findings on the chart',
-                    style: TextStyle(fontSize: 11, color: Colors.grey),
+                  const SizedBox(height: 8),
+                  Wrap(
+                    spacing: 6,
+                    runSpacing: 6,
+                    crossAxisAlignment: WrapCrossAlignment.center,
+                    children: [
+                      const Icon(Icons.event, size: 16, color: kVisitTeal),
+                      const Text('Appointment:', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600)),
+                      ActionChip(label: const Text('Now'), visualDensity: VisualDensity.compact,
+                        onPressed: () => _setAppointment(DateTime.now(), label: 'Now')),
+                      ActionChip(label: const Text('5 mins'), visualDensity: VisualDensity.compact,
+                        onPressed: () => _setAppointment(DateTime.now().add(const Duration(minutes: 5)), label: 'In 5 mins')),
+                      ActionChip(label: const Text('Tomorrow'), visualDensity: VisualDensity.compact,
+                        onPressed: () => _setAppointment(DateTime.now().add(const Duration(days: 1)), label: 'Tomorrow')),
+                      if (appt.isNotEmpty)
+                        Text(appt, style: const TextStyle(fontSize: 11, color: kVisitNavy)),
+                    ],
                   ),
                 ],
               ),
