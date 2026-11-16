@@ -133,6 +133,7 @@ class _ClinicShellState extends State<ClinicShell> {
 
   String _keywordFromPrompt(String prompt) {
     final p = prompt.toLowerCase();
+    if (p.contains('dmft') || p.contains('dmfs')) return 'DMFT';
     const candidates = <String, List<String>>{
       'Restoration': ['restor', 'filling', 'filled', 'composite'],
       'Root Canal': ['root canal', 'rct', 'endodontic'],
@@ -172,6 +173,9 @@ class _ClinicShellState extends State<ClinicShell> {
 
   ({String type, String category}) _resolveQueryCategory(String keyword) {
     final k = keyword.toLowerCase();
+    if (k.contains('dmft') || k.contains('dmfs')) {
+      return (type: 'dmft', category: 'DMFT');
+    }
     if (k.contains('restor') || k.contains('fill') || k.contains('composite')) {
       return (type: 'treatment', category: 'Restoration');
     }
@@ -200,6 +204,9 @@ class _ClinicShellState extends State<ClinicShell> {
   String _teethFor(String keyword, Map<String, dynamic> row) {
     final resolved = _resolveQueryCategory(keyword);
     final odo = OdontogramModel.fromPatientRecord(row);
+    if (resolved.type == 'dmft') {
+      return odo.dmftIndex == 0 ? '' : odo.dmftIndex.toString();
+    }
     String teeth = '';
     if (resolved.type == 'treatment') {
       teeth = (odo.treatmentTeethMap[resolved.category] ?? const <String>[]).join(', ');

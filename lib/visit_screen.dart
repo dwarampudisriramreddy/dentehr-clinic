@@ -601,7 +601,9 @@ class _PatientVisitScreenState extends State<PatientVisitScreen> {
       if (mounted) setState(() => _aiStatus = 'Thinking...');
       final result = await _ai.interpretOdontogramPrompt(
         prompt,
-        _odontogram.toDiagnosisSummaryString(),
+        'DMFT: ${_odontogram.dmftIndex} (Abnormal: ${_odontogram.abnormalTeeth.length}, '
+        'Missing: ${_odontogram.missingTeeth.length}, Treated: ${_odontogram.treatedTeeth.length}). '
+        '${_odontogram.toDiagnosisSummaryString()}',
       );
       final reply = (result['reply'] ?? '').toString();
       final changes = result['changes'] is List ? result['changes'] as List : const [];
