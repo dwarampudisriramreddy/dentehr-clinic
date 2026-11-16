@@ -1,10 +1,12 @@
 import 'dart:async';
 import 'dart:math' as math;
 
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'odontogram/odontogram.dart';
+import 'services/dental_coding_ai.dart';
 
 const Color kVisitTeal = Color(0xFF0D9488);
 const Color kVisitNavy = Color(0xFF1E3A5F);
@@ -17,24 +19,19 @@ class PatientVisitScreen extends StatefulWidget {
   State<PatientVisitScreen> createState() => _PatientVisitScreenState();
 }
 
-class _VisitTreatment {
-  final String id;
-  final String name;
-  final String category;
-  final String description;
-  final double cost;
-  final bool available;
-  bool selected = false;
-  int quantity = 1;
+class _PlanAppointment {
+  final String treatment;
+  final String teeth;
+  DateTime scheduledAt;
+  bool enabled = true;
 
-  _VisitTreatment({
-    required this.id,
-    required this.name,
-    required this.category,
-    required this.description,
-    required this.cost,
-    required this.available,
+  _PlanAppointment({
+    required this.treatment,
+    required this.teeth,
+    required this.scheduledAt,
   });
+
+  String get reason => teeth.isEmpty ? treatment : '$treatment: $teeth';
 }
 
 class _PatientVisitScreenState extends State<PatientVisitScreen> {
@@ -57,23 +54,23 @@ class _PatientVisitScreenState extends State<PatientVisitScreen> {
   String? _sex;
   int _step = 0;
   bool _saving = false;
-  bool _loadingTreatments = false;
-  String? _treatmentError;
-  String _treatmentSearch = '';
-  String _treatmentsClinic = '';
   Timer? _phoneLookupDebounce;
   String _loadedPhone = '';
   late OdontogramModel _odontogram;
 
+  final DentalCodingAI _ai = DentalCodingAI();
+  bool _aiLoading = false;
+  String _aiStatus = '';
+
   bool _xrayRequired = true;
   String _xrayType = 'OPG';
   String _xrayStatus = 'requested';
-  String _paymentMethod = 'Cash';
-  List<_VisitTreatment> _treatments = [];
+  final String _paymentMethod = 'Cash';
+  List<_PlanAppointment> _planAppointments = [];
+  int _apptSpacingMinutes = 30;
 
   static const List<String> _xrayTypes = ['OPG', 'IOPA', 'Periapical', 'Bitewing', 'CBCT', 'Other'];
   static const List<String> _xrayStatuses = ['requested', 'taken', 'reported'];
-  static const List<String> _paymentMethods = ['Cash', 'Card', 'UPI', 'Bank transfer', 'Insurance'];
 
   @override
   void initState() {
@@ -82,11 +79,11 @@ class _PatientVisitScreenState extends State<PatientVisitScreen> {
     if (widget.patient != null) {
       _applyPatient(widget.patient!);
     }
-    _loadTreatments();
   }
 
   @override
   void dispose() {
+    _ai.dispose();
     _phoneLookupDebounce?.cancel();
     _phoneController.dispose();
     _nameController.dispose();
@@ -153,88 +150,41 @@ class _PatientVisitScreenState extends State<PatientVisitScreen> {
     } catch (_) {}
   }
 
-  Future<void> _loadTreatments() async {
-    const clinic = 'Dentehr Clinic';
-    setState(() {
-      _loadingTreatments = true;
-      _treatmentError = null;
-    });
-    try {
-      final catalog = await Supabase.instance.client.from('treatments').select().order('category');
-      List<Map<String, dynamic>> overrides = [];
-      try {
-        final rows = await Supabase.instance.client
-            .from('clinic_treatments')
-            .select()
-            .eq('clinic', clinic);
-        overrides = List<Map<String, dynamic>>.from(rows);
-      } catch (_) {}
-
-      final items = <_VisitTreatment>[];
-      for (final treatment in catalog) {
-        final id = treatment['id']?.toString() ?? '';
-        Map<String, dynamic>? override;
-        for (final row in overrides) {
-          if (row['treatment_id']?.toString() == id) {
-            override = row;
-            break;
-          }
-        }
-        final availability = (override?['availability'] ?? treatment['availability'] ?? 'available')
-            .toString()
-            .toLowerCase();
-        final isActive = (override?['is_active'] ?? treatment['is_active'] ?? true) == true;
-        items.add(
-          _VisitTreatment(
-            id: id,
-            name: treatment['name']?.toString() ?? 'Treatment',
-            category: treatment['category']?.toString() ?? 'General',
-            description: treatment['description']?.toString() ?? '',
-            cost: (override?['cost'] as num?)?.toDouble() ??
-                (treatment['cost'] as num?)?.toDouble() ??
-                0,
-            available: isActive && availability != 'unavailable',
-          ),
-        );
-      }
-
-      if (!mounted) return;
-      setState(() {
-        _treatments = items;
-        _treatmentsClinic = clinic;
-        _loadingTreatments = false;
-      });
-    } catch (error) {
-      if (!mounted) return;
-      setState(() {
-        _loadingTreatments = false;
-        _treatmentError = error.toString();
-      });
+  DateTime _parseBaseAppointment() {
+    final raw = _appointmentController.text.trim();
+    final m = RegExp(r'(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2})').firstMatch(raw);
+    if (m != null) {
+      final p = '${m.group(1)} ${m.group(2)}'.split(RegExp(r'[- :]+')).map(int.parse).toList();
+      return DateTime(p[0], p[1], p[2], p[3], p[4]);
     }
+    final d = DateTime.tryParse(raw.replaceFirst(' ', 'T'));
+    if (d != null) return d.toLocal();
+    return DateTime.now();
   }
 
-  double get _subtotal => _treatments
-      .where((treatment) => treatment.selected)
-      .fold(0, (sum, treatment) => sum + treatment.cost * treatment.quantity);
-
-  double get _discount {
-    final value = double.tryParse(_discountController.text.trim()) ?? 0;
-    return value.clamp(0, _subtotal);
+  String _fmtDt(DateTime dt) {
+    String two(int n) => n.toString().padLeft(2, '0');
+    return '${dt.year}-${two(dt.month)}-${two(dt.day)} ${two(dt.hour)}:${two(dt.minute)}';
   }
 
-  double get _total => math.max(0, _subtotal - _discount);
-
-  double get _amountPaid {
-    final value = double.tryParse(_amountPaidController.text.trim()) ?? 0;
-    return math.max(0, value);
+  void _generatePlanAppointments() {
+    final base = _parseBaseAppointment();
+    final map = _odontogram.treatmentTeethMap;
+    final items = <_PlanAppointment>[];
+    var i = 0;
+    map.forEach((treatment, teeth) {
+      if (teeth.isEmpty) return;
+      items.add(_PlanAppointment(
+        treatment: treatment,
+        teeth: teeth.join(', '),
+        scheduledAt: base.add(Duration(minutes: _apptSpacingMinutes * i)),
+      ));
+      i++;
+    });
+    setState(() => _planAppointments = items);
   }
 
-  String get _paymentStatus {
-    if (_total <= 0) return 'paid';
-    if (_amountPaid <= 0) return 'unpaid';
-    if (_amountPaid < _total) return 'partial';
-    return 'paid';
-  }
+  String get _paymentStatus => 'pending';
 
   bool _validatePatient() {
     if (_phoneController.text.trim().isEmpty) {
@@ -272,12 +222,6 @@ class _PatientVisitScreenState extends State<PatientVisitScreen> {
           _diagnosisController.text = _odontogram.toDiagnosisSummaryString();
         }
         return true;
-      case 5:
-        if (_amountPaid > _total) {
-          _showError('Amount paid cannot be more than the treatment total.');
-          return false;
-        }
-        return true;
       default:
         return true;
     }
@@ -292,8 +236,8 @@ class _PatientVisitScreenState extends State<PatientVisitScreen> {
 
   Future<void> _goNext() async {
     if (!_validateCurrentStep()) return;
-    if (_step == 3 && _treatmentsClinic != 'Dentehr Clinic') {
-      await _loadTreatments();
+    if (_step == 3) {
+      _generatePlanAppointments();
     }
     if (!mounted) return;
     setState(() => _step = math.min(_lastStep, _step + 1));
@@ -316,19 +260,7 @@ class _PatientVisitScreenState extends State<PatientVisitScreen> {
     final parts = patientName.split(RegExp(r'\s+')).where((p) => p.isNotEmpty).toList();
     final firstName = parts.isEmpty ? '' : parts.first;
     final lastName = parts.length <= 1 ? '' : parts.sublist(1).join(' ');
-    final selected = _treatments.where((treatment) => treatment.selected).toList();
-    final planItems = selected
-        .map(
-          (treatment) => {
-            'treatment_id': treatment.id,
-            'name': treatment.name,
-            'category': treatment.category,
-            'unit_cost': treatment.cost,
-            'quantity': treatment.quantity,
-            'line_total': treatment.cost * treatment.quantity,
-          },
-        )
-        .toList();
+    final enabledAppts = _planAppointments.where((a) => a.enabled).toList();
     final diagnosis = _diagnosisController.text.trim().isEmpty
         ? _odontogram.toDiagnosisSummaryString()
         : _diagnosisController.text.trim();
@@ -341,11 +273,13 @@ class _PatientVisitScreenState extends State<PatientVisitScreen> {
             'image_url': _xrayImageUrlController.text.trim(),
           }
         : null;
-    final planText = [
-      _odontogram.toTreatmentPlanSummaryString(),
-      if (selected.isNotEmpty)
-        selected.map((treatment) => '${treatment.name} x${treatment.quantity}').join(', '),
-    ].where((part) => part.isNotEmpty).join(' | ');
+    final planText = _odontogram.toTreatmentPlanSummaryString();
+    final planItems = enabledAppts.map((a) => {
+      'name': a.treatment,
+      'teeth': a.teeth,
+      'reason': a.reason,
+      'scheduled_at': a.scheduledAt.toUtc().toIso8601String(),
+    }).toList();
 
     try {
       await Supabase.instance.client.from('visits').insert({
@@ -359,17 +293,37 @@ class _PatientVisitScreenState extends State<PatientVisitScreen> {
         'xray': xray,
         'final_diagnosis': diagnosis,
         'treatment_plan': planItems,
-        'subtotal': _subtotal,
-        'discount': _discount,
-        'total': _total,
-        'amount_paid': _amountPaid,
+        'subtotal': 0,
+        'discount': 0,
+        'total': 0,
+        'amount_paid': 0,
         'payment_method': _paymentMethod,
-        'payment_status': _paymentStatus,
+        'payment_status': 'pending',
         'payment_notes': _paymentNotesController.text.trim(),
         'status': 'completed',
       });
 
+      int apptsCreated = 0;
+      String? apptError;
+      for (final a in enabledAppts) {
+        try {
+          await Supabase.instance.client.from('appointments').insert({
+            'patient_name': patientName,
+            'patient_phone': phone,
+            'clinic': clinic,
+            'appointment_type': 'clinic',
+            'status': 'pending',
+            'reason': a.reason,
+            'scheduled_at': a.scheduledAt.toUtc().toIso8601String(),
+          });
+          apptsCreated++;
+        } catch (e) {
+          apptError = e.toString();
+        }
+      }
+
       final age = int.tryParse(_ageController.text.trim()) ?? 0;
+      final firstAppt = enabledAppts.isNotEmpty ? _fmtDt(enabledAppts.first.scheduledAt) : _appointmentController.text.trim();
       await Supabase.instance.client.from('patients').upsert({
         'phone': phone,
         'first_name': firstName,
@@ -378,9 +332,7 @@ class _PatientVisitScreenState extends State<PatientVisitScreen> {
         'sex': _sex ?? '',
         'diagnosis': diagnosis,
         'treatment_plan': _odontogram.embedInString(planText),
-        'appointment': _appointmentController.text.trim().isEmpty
-            ? 'Completed'
-            : _appointmentController.text.trim(),
+        'appointment': firstAppt.isEmpty ? 'Scheduled' : firstAppt,
         'clinic': clinic,
       }, onConflict: 'phone');
 
@@ -388,7 +340,7 @@ class _PatientVisitScreenState extends State<PatientVisitScreen> {
       await showDialog<void>(
         context: context,
         builder: (ctx) => AlertDialog(
-          title: const Text('Visit completed'),
+          title: const Text('Visit saved'),
           content: Column(
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -397,16 +349,13 @@ class _PatientVisitScreenState extends State<PatientVisitScreen> {
               const SizedBox(height: 6),
               Text('Final diagnosis: $diagnosis'),
               const SizedBox(height: 6),
-              Text('Treatment total: \$${_total.toStringAsFixed(2)}'),
-              Text('Amount paid: \$${_amountPaid.toStringAsFixed(2)}'),
-              Text('Payment status: ${_capitalize(_paymentStatus)}'),
+              Text('Appointments scheduled: $apptsCreated / ${enabledAppts.length}'),
+              if (apptError != null)
+                Text('Some appointments failed: $apptError', style: const TextStyle(color: Colors.red, fontSize: 12)),
             ],
           ),
           actions: [
-            ElevatedButton(
-              onPressed: () => Navigator.pop(ctx),
-              child: const Text('Done'),
-            ),
+            ElevatedButton(onPressed: () => Navigator.pop(ctx), child: const Text('Done')),
           ],
         ),
       );
@@ -563,6 +512,136 @@ class _PatientVisitScreenState extends State<PatientVisitScreen> {
     });
   }
 
+  String _normalizeTooth(dynamic raw) {
+    final s = raw?.toString().trim() ?? '';
+    final m = RegExp(r'(1[1-8]|2[1-8]|3[1-8]|4[1-8])').firstMatch(s);
+    return m?.group(1) ?? s;
+  }
+
+  String _normalizeCategory(dynamic raw) {
+    final s = (raw?.toString() ?? '').trim().toLowerCase().replaceAll('_', ' ');
+    const map = {
+      'decayed': 'Decayed', 'caries': 'Decayed', 'cavity': 'Decayed', 'dental caries': 'Decayed',
+      'missing': 'Missing', 'treated': 'Treated', 'filled': 'Treated',
+      'restored': 'Treated', 'restoration': 'Treated', 'pulpitis': 'Pulpitis',
+      'abscess': 'Abscess', 'fracture': 'Fracture', 'fractured': 'Fracture',
+      'periodontitis': 'Periodontitis', 'attrition': 'Attrition',
+      'abrasion': 'Abrasion', 'root stump': 'Root Stump',
+      'impacted': 'Impacted', 'mobility': 'Mobility',
+      'recession': 'Recession', 'pocket': 'Pocket', 'normal': 'Normal',
+      'healthy': 'Normal',
+    };
+    return map[s] ?? (s.isEmpty ? '' : '${s[0].toUpperCase()}${s.substring(1)}');
+  }
+
+  Future<void> _ensureOdontogramAiModel() async {
+    if (_ai.isReady) return;
+    if (_ai.requiresModelFile) {
+      final result = await FilePicker.platform.pickFiles(
+        type: FileType.any,
+        dialogTitle: 'Pick AI model file (.litertlm)',
+      );
+      if (result == null || result.files.single.path == null) {
+        throw Exception('No model file selected');
+      }
+      await _ai.initModel(
+        modelPath: result.files.single.path!,
+        onLog: (msg) {
+          if (mounted) setState(() => _aiStatus = msg);
+        },
+      );
+    } else {
+      await _ai.initModel(
+        onLog: (msg) {
+          if (mounted) setState(() => _aiStatus = msg);
+        },
+      );
+    }
+  }
+
+  Future<void> _runOdontogramAi() async {
+    final promptController = TextEditingController();
+    final prompt = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('AI chart assistant'),
+        content: TextField(
+          controller: promptController,
+          minLines: 3,
+          maxLines: 6,
+          decoration: const InputDecoration(
+            border: OutlineInputBorder(),
+            hintText: 'e.g. "Tooth 36 has pulpitis, 11 and 21 decayed"',
+          ),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(ctx, promptController.text.trim()),
+            child: const Text('Run'),
+          ),
+        ],
+      ),
+    );
+    if (prompt == null || prompt.isEmpty) return;
+
+    setState(() {
+      _aiLoading = true;
+      _aiStatus = 'Starting...';
+    });
+    try {
+      if (!_ai.isReady) {
+        if (mounted) {
+          setState(() => _aiStatus = _ai.requiresModelFile
+              ? 'Pick a model file...'
+              : 'Initializing Web AI (first run may download model)...');
+        }
+        await _ensureOdontogramAiModel();
+      }
+      if (mounted) setState(() => _aiStatus = 'Thinking...');
+      final result = await _ai.interpretOdontogramPrompt(
+        prompt,
+        _odontogram.toDiagnosisSummaryString(),
+      );
+      final reply = (result['reply'] ?? '').toString();
+      final changes = result['changes'] is List ? result['changes'] as List : const [];
+      var applied = 0;
+      for (final c in changes) {
+        if (c is! Map) continue;
+        final tooth = _normalizeTooth(c['tooth']);
+        final cat = _normalizeCategory(c['category']);
+        if (RegExp(r'^(1[1-8]|2[1-8]|3[1-8]|4[1-8])$').hasMatch(tooth) &&
+            cat.isNotEmpty &&
+            cat != 'Normal') {
+          final existing = _odontogram.getTeethStringForCategory(cat);
+          final merged = existing.isEmpty ? tooth : '$existing, $tooth';
+          _odontogram.setTeethForCategory(cat, merged);
+          applied++;
+        }
+      }
+      if (mounted) {
+        setState(() {
+          _aiLoading = false;
+          _aiStatus = '';
+        });
+        final msg = reply.isEmpty ? 'AI chart updated' : reply;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(applied > 0 ? '$msg (applied $applied)' : msg)),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _aiLoading = false;
+          _aiStatus = '';
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('AI error: $e'), backgroundColor: Colors.red),
+        );
+      }
+    }
+  }
+
   Widget _buildFindingsStep() {
     final appt = _appointmentController.text.trim();
     return SafeArea(
@@ -590,6 +669,20 @@ class _PatientVisitScreenState extends State<PatientVisitScreen> {
                       const Text(
                         'Mark findings on the chart',
                         style: TextStyle(fontSize: 11, color: Colors.grey),
+                      ),
+                      const SizedBox(width: 6),
+                      ActionChip(
+                        avatar: _aiLoading
+                            ? const SizedBox(
+                                width: 14,
+                                height: 14,
+                                child: CircularProgressIndicator(strokeWidth: 2),
+                              )
+                            : const Icon(Icons.auto_awesome, size: 16, color: kVisitTeal),
+                        label: Text(_aiLoading ? 'AI...' : 'AI', style: const TextStyle(fontSize: 11)),
+                        tooltip: _aiStatus.isEmpty ? 'AI chart assistant' : _aiStatus,
+                        visualDensity: VisualDensity.compact,
+                        onPressed: _aiLoading ? null : _runOdontogramAi,
                       ),
                     ],
                   ),
@@ -793,103 +886,135 @@ class _PatientVisitScreenState extends State<PatientVisitScreen> {
   }
 
   Widget _buildTreatmentStep() {
-    final query = _treatmentSearch.toLowerCase();
-    final filtered = _treatments.where((treatment) {
-      if (query.isEmpty) return true;
-      return treatment.name.toLowerCase().contains(query) ||
-          treatment.category.toLowerCase().contains(query) ||
-          treatment.description.toLowerCase().contains(query);
-    }).toList();
-
+    if (_planAppointments.isEmpty) {
+      _generatePlanAppointments();
+    }
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         const _StepHeader(
           icon: Icons.medical_services_outlined,
           step: 5,
-          title: 'Treatment plan',
-          subtitle: 'Select the treatments to perform and set quantities.',
+          title: 'Treatment plan & appointments',
+          subtitle: 'Each treatment from the odontogram becomes its own appointment. Adjust times and disable what should not be scheduled.',
         ),
-        const SizedBox(height: 12),
-        Row(
-          children: [
-            Expanded(
-              child: TextField(
-                decoration: InputDecoration(
-                  hintText: 'Search treatments...',
-                  prefixIcon: const Icon(Icons.search),
-                  isDense: true,
-                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+        const SizedBox(height: 14),
+        Card(
+          elevation: 0,
+          color: kVisitTeal.withValues(alpha: 0.06),
+          child: Padding(
+            padding: const EdgeInsets.all(12),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text('Plan from odontogram', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13)),
+                const SizedBox(height: 4),
+                Text(
+                  _odontogram.toTreatmentPlanSummaryString(),
+                  style: TextStyle(fontSize: 12, color: Colors.grey.shade800, height: 1.4),
                 ),
-                onChanged: (value) => setState(() => _treatmentSearch = value),
-              ),
-            ),
-            const SizedBox(width: 8),
-            IconButton(
-              tooltip: 'Refresh treatments',
-              onPressed: _loadingTreatments ? null : _loadTreatments,
-              icon: _loadingTreatments
-                  ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
-                  : const Icon(Icons.refresh),
-            ),
-          ],
-        ),
-        if (_treatmentError != null)
-          Padding(
-            padding: const EdgeInsets.only(top: 8),
-            child: Text(
-              'Could not load treatments: $_treatmentError',
-              style: const TextStyle(color: Colors.red, fontSize: 12),
+                const SizedBox(height: 8),
+                Row(
+                  children: [
+                    const Text('Spacing:', style: TextStyle(fontSize: 12)),
+                    const SizedBox(width: 8),
+                    DropdownButton<int>(
+                      value: _apptSpacingMinutes,
+                      isDense: true,
+                      items: const [
+                        DropdownMenuItem(value: 15, child: Text('15 min')),
+                        DropdownMenuItem(value: 30, child: Text('30 min')),
+                        DropdownMenuItem(value: 45, child: Text('45 min')),
+                        DropdownMenuItem(value: 60, child: Text('1 hour')),
+                        DropdownMenuItem(value: 1440, child: Text('1 day')),
+                      ],
+                      onChanged: (v) => setState(() {
+                        _apptSpacingMinutes = v ?? 30;
+                        _planAppointments.clear();
+                      }),
+                    ),
+                    const Spacer(),
+                    TextButton.icon(
+                      onPressed: () => setState(() => _planAppointments.clear()),
+                      icon: const Icon(Icons.refresh, size: 16),
+                      label: const Text('Regenerate', style: TextStyle(fontSize: 12)),
+                    ),
+                  ],
+                ),
+              ],
             ),
           ),
-        const SizedBox(height: 10),
-        if (_loadingTreatments)
-          const Center(child: Padding(padding: EdgeInsets.all(24), child: CircularProgressIndicator()))
-        else if (filtered.isEmpty)
-          const Center(child: Padding(padding: EdgeInsets.all(24), child: Text('No treatments found')))
+        ),
+        const SizedBox(height: 12),
+        if (_planAppointments.isEmpty)
+          Padding(
+            padding: const EdgeInsets.all(16),
+            child: Text(
+              'No treatment findings on the odontogram. Go back and mark findings, or save the visit without appointments.',
+              style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
+            ),
+          )
         else
-          ...filtered.map(
-            (treatment) => Card(
+          ..._planAppointments.map(
+            (appt) => Card(
               margin: const EdgeInsets.only(bottom: 8),
-              child: CheckboxListTile(
-                value: treatment.selected,
-                onChanged: treatment.available
-                    ? (value) => setState(() => treatment.selected = value ?? false)
-                    : null,
-                controlAffinity: ListTileControlAffinity.leading,
-                title: Text(
-                  treatment.name,
-                  style: TextStyle(
-                    fontWeight: FontWeight.w600,
-                    fontSize: 13,
-                    color: treatment.available ? null : Colors.grey,
-                  ),
-                ),
-                subtitle: Text(
-                  '${treatment.category} • \$${treatment.cost.toStringAsFixed(2)}'
-                  '${treatment.available ? '' : ' • unavailable'}',
-                  style: TextStyle(fontSize: 11, color: Colors.grey.shade600),
-                ),
-                secondary: treatment.selected
-                    ? Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          IconButton(
-                            visualDensity: VisualDensity.compact,
-                            onPressed: treatment.quantity > 1
-                                ? () => setState(() => treatment.quantity -= 1)
-                                : null,
-                            icon: const Icon(Icons.remove_circle_outline, size: 18),
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(8, 4, 8, 8),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Checkbox(
+                          value: appt.enabled,
+                          onChanged: (v) => setState(() => appt.enabled = v ?? false),
+                        ),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                appt.treatment,
+                                style: TextStyle(
+                                  fontWeight: FontWeight.w600,
+                                  fontSize: 13,
+                                  color: appt.enabled ? null : Colors.grey,
+                                ),
+                              ),
+                              if (appt.teeth.isNotEmpty)
+                                Text('Teeth: ${appt.teeth}', style: TextStyle(fontSize: 11, color: Colors.grey.shade600)),
+                            ],
                           ),
-                          Text('${treatment.quantity}', style: const TextStyle(fontWeight: FontWeight.bold)),
-                          IconButton(
-                            visualDensity: VisualDensity.compact,
-                            onPressed: () => setState(() => treatment.quantity += 1),
-                            icon: const Icon(Icons.add_circle_outline, size: 18),
-                          ),
-                        ],
-                      )
-                    : null,
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 4),
+                    Wrap(
+                      spacing: 6,
+                      runSpacing: 4,
+                      crossAxisAlignment: WrapCrossAlignment.center,
+                      children: [
+                        const Icon(Icons.event, size: 16, color: kVisitTeal),
+                        Text(_fmtDt(appt.scheduledAt), style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600)),
+                        ActionChip(
+                          label: const Text('+1 day', style: TextStyle(fontSize: 11)),
+                          visualDensity: VisualDensity.compact,
+                          onPressed: () => setState(() => appt.scheduledAt = appt.scheduledAt.add(const Duration(days: 1))),
+                        ),
+                        ActionChip(
+                          label: const Text('+1 hour', style: TextStyle(fontSize: 11)),
+                          visualDensity: VisualDensity.compact,
+                          onPressed: () => setState(() => appt.scheduledAt = appt.scheduledAt.add(const Duration(hours: 1))),
+                        ),
+                        ActionChip(
+                          label: const Text('Now', style: TextStyle(fontSize: 11)),
+                          visualDensity: VisualDensity.compact,
+                          onPressed: () => setState(() => appt.scheduledAt = DateTime.now()),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
               ),
             ),
           ),
@@ -898,7 +1023,7 @@ class _PatientVisitScreenState extends State<PatientVisitScreen> {
   }
 
   Widget _buildPaymentStep() {
-    final selected = _treatments.where((treatment) => treatment.selected).toList();
+    final enabledAppts = _planAppointments.where((a) => a.enabled).toList();
     return Card(
       elevation: 2,
       child: Padding(
@@ -907,100 +1032,54 @@ class _PatientVisitScreenState extends State<PatientVisitScreen> {
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             const _StepHeader(
-              icon: Icons.payments_outlined,
+              icon: Icons.event_available_outlined,
               step: 6,
-              title: 'Payment',
-              subtitle: 'Record the amount received for the completed treatment.',
+              title: 'Appointments',
+              subtitle: 'Confirm the appointments that will be created for each treatment.',
             ),
             const SizedBox(height: 16),
-            if (selected.isEmpty)
+            if (enabledAppts.isEmpty)
               Text(
-                'No treatment selected. You can still save the visit with no charge.',
+                'No appointments will be created. You can still save the visit.',
                 style: TextStyle(fontSize: 12, color: Colors.grey.shade700),
               )
             else
-              ...selected.map(
-                (treatment) => Padding(
-                  padding: const EdgeInsets.only(bottom: 6),
+              ...enabledAppts.map(
+                (appt) => Padding(
+                  padding: const EdgeInsets.only(bottom: 8),
                   child: Row(
                     children: [
+                      const Icon(Icons.check_circle_outline, size: 16, color: kVisitTeal),
+                      const SizedBox(width: 8),
                       Expanded(
                         child: Text(
-                          '${treatment.name} x${treatment.quantity}',
+                          appt.teeth.isEmpty ? appt.treatment : '${appt.treatment} (${appt.teeth})',
                           style: const TextStyle(fontSize: 12),
                         ),
                       ),
-                      Text(
-                        '\$${(treatment.cost * treatment.quantity).toStringAsFixed(2)}',
-                        style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
-                      ),
+                      Text(_fmtDt(appt.scheduledAt), style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600)),
                     ],
                   ),
                 ),
               ),
             const Divider(height: 24),
-            _totalRow('Subtotal', _subtotal),
-            const SizedBox(height: 10),
-            TextField(
-              controller: _discountController,
-              keyboardType: const TextInputType.numberWithOptions(decimal: true),
-              onChanged: (_) => setState(() {}),
-              decoration: const InputDecoration(
-                labelText: 'Discount',
-                prefixText: '\$ ',
-                border: OutlineInputBorder(),
-                isDense: true,
-              ),
-            ),
-            const SizedBox(height: 8),
-            _totalRow('Total', _total, bold: true),
-            const SizedBox(height: 16),
-            TextField(
-              controller: _amountPaidController,
-              keyboardType: const TextInputType.numberWithOptions(decimal: true),
-              onChanged: (_) => setState(() {}),
-              decoration: InputDecoration(
-                labelText: 'Amount paid now',
-                prefixText: '\$ ',
-                border: const OutlineInputBorder(),
-                suffixIcon: TextButton(
-                  onPressed: () => setState(() {
-                    _amountPaidController.text = _total.toStringAsFixed(2);
-                  }),
-                  child: const Text('Pay full'),
-                ),
-              ),
-            ),
-            const SizedBox(height: 12),
-            DropdownButtonFormField<String>(
-              initialValue: _paymentMethod,
-              decoration: const InputDecoration(
-                labelText: 'Payment method',
-                border: OutlineInputBorder(),
-              ),
-              items: _paymentMethods
-                  .map((method) => DropdownMenuItem(value: method, child: Text(method)))
-                  .toList(),
-              onChanged: (value) => setState(() => _paymentMethod = value ?? _paymentMethod),
-            ),
-            const SizedBox(height: 12),
             TextField(
               controller: _paymentNotesController,
               maxLines: 2,
               decoration: const InputDecoration(
-                labelText: 'Payment notes (optional)',
+                labelText: 'Notes (optional)',
                 border: OutlineInputBorder(),
               ),
             ),
             const SizedBox(height: 12),
             Row(
               children: [
-                const Text('Payment status: ', style: TextStyle(fontSize: 12)),
+                const Text('Appointments to create: ', style: TextStyle(fontSize: 12)),
                 _PaymentChip(status: _paymentStatus),
                 const Spacer(),
                 Text(
-                  'Balance: \$${math.max(0, _total - _amountPaid).toStringAsFixed(2)}',
-                  style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
+                  '${enabledAppts.length}',
+                  style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: kVisitNavy),
                 ),
               ],
             ),
@@ -1027,13 +1106,13 @@ class _PatientVisitScreenState extends State<PatientVisitScreen> {
                 child: Row(
                   children: [
                     Text(
-                      '${_treatments.where((t) => t.selected).length} treatment(s)',
+                      '${_planAppointments.where((a) => a.enabled).length} appointment(s)',
                       style: const TextStyle(fontSize: 11, color: Colors.grey),
                     ),
                     const Spacer(),
                     Text(
-                      'Total: \$${_total.toStringAsFixed(2)}',
-                      style: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: kVisitNavy),
+                      _planAppointments.isEmpty ? 'No plan from odontogram' : 'One appointment per treatment',
+                      style: const TextStyle(fontSize: 11, color: Colors.grey),
                     ),
                   ],
                 ),
@@ -1063,7 +1142,7 @@ class _PatientVisitScreenState extends State<PatientVisitScreen> {
                             child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
                           )
                         : const Icon(Icons.check, size: 18),
-                    label: Text(_saving ? 'Saving...' : 'Save visit & payment'),
+                    label: Text(_saving ? 'Saving...' : 'Save visit & schedule appointments'),
                     style: FilledButton.styleFrom(backgroundColor: kVisitTeal),
                   ),
               ],
@@ -1085,7 +1164,7 @@ class _PatientVisitScreenState extends State<PatientVisitScreen> {
       case 3:
         return 'Next: Treatment plan';
       case 4:
-        return 'Next: Payment';
+        return 'Next: Appointments';
       default:
         return 'Next';
     }
@@ -1096,22 +1175,6 @@ class _PatientVisitScreenState extends State<PatientVisitScreen> {
     final phone = _phoneController.text.trim();
     if (name.isEmpty) return phone;
     return '$name • $phone';
-  }
-
-  Widget _totalRow(String label, double value, {bool bold = false}) {
-    return Row(
-      children: [
-        Text(
-          label,
-          style: TextStyle(fontWeight: bold ? FontWeight.bold : FontWeight.normal, fontSize: bold ? 14 : 12),
-        ),
-        const Spacer(),
-        Text(
-          '\$${value.toStringAsFixed(2)}',
-          style: TextStyle(fontWeight: bold ? FontWeight.bold : FontWeight.w600, fontSize: bold ? 14 : 12),
-        ),
-      ],
-    );
   }
 }
 
