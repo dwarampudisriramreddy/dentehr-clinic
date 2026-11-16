@@ -3,7 +3,9 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'appointments_screen.dart';
+import 'package:file_picker/file_picker.dart';
 import 'odontogram/odontogram.dart';
+import 'services/dental_coding_ai.dart';
 import 'treatment_screen.dart';
 import 'visit_screen.dart';
 import 'visits_screen.dart';
@@ -35,17 +37,12 @@ class DentehrClinicApp extends StatelessWidget {
       );
 }
 
-const _tabs = [
+const _destinations = [
   ('Dashboard', Icons.dashboard_outlined),
+  ('Patients', Icons.people_outline),
   ('Appointments', Icons.calendar_month_outlined),
   ('Visits', Icons.receipt_long_outlined),
-  ('Patients', Icons.people_outline),
-  ('Case History', Icons.history_edu_outlined),
-  ('Dental Chart', Icons.grid_on_outlined),
   ('Treatment', Icons.medical_services_outlined),
-  ('Staff', Icons.badge_outlined),
-  ('Reports', Icons.bar_chart_outlined),
-  ('Settings', Icons.settings_outlined),
 ];
 
 class ClinicShell extends StatefulWidget {
@@ -56,65 +53,240 @@ class ClinicShell extends StatefulWidget {
 
 class _ClinicShellState extends State<ClinicShell> {
   int _index = 0;
+  final DentalCodingAI _ai = DentalCodingAI();
+  bool _aiLoading = false;
+
+  @override
+  void dispose() {
+    _ai.dispose();
+    super.dispose();
+  }
+
+  String _normalizeTooth(dynamic raw) {
+    final s = raw?.toString().trim() ?? '';
+    final m = RegExp(r'(1[1-8]|2[1-8]|3[1-8]|4[1-8])').firstMatch(s);
+    return m?.group(1) ?? s;
+  }
+
+  String _normalizeCategory(dynamic raw) {
+    final s = (raw?.toString() ?? '').trim().toLowerCase().replaceAll('_', ' ');
+    const map = {
+      'decayed': 'Decayed', 'caries': 'Decayed', 'cavity': 'Decayed',
+      'missing': 'Missing', 'treated': 'Treated', 'filled': 'Treated',
+      'restored': 'Treated', 'restoration': 'Treated', 'pulpitis': 'Pulpitis',
+      'abscess': 'Abscess', 'fracture': 'Fracture', 'fractured': 'Fracture',
+      'periodontitis': 'Periodontitis', 'attrition': 'Attrition',
+      'abrasion': 'Abrasion', 'root stump': 'Root Stump',
+      'impacted': 'Impacted', 'mobility': 'Mobility',
+      'recession': 'Recession', 'pocket': 'Pocket', 'normal': 'Normal',
+      'healthy': 'Normal',
+    };
+    return map[s] ?? (s.isEmpty ? '' : '${s[0].toUpperCase()}${s.substring(1)}');
+  }
+
+  Future<void> _ensureAiModel() async {
+    if (_ai.isReady) return;
+    final result = await FilePicker.platform.pickFiles(
+      type: FileType.custom,
+      allowedExtensions: const ['litertlm', 'task', 'bin'],
+      dialogTitle: 'Pick AI model file (.litertlm)',
+    );
+    if (result == null || result.files.single.path == null) {
+      throw Exception('No model file selected');
+    }
+    await _ai.initModel(modelPath: result.files.single.path!);
+  }
+
+  Future<void> _runGlobalAiAgent() async {
+    final promptController = TextEditingController();
+    final prompt = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('AI'),
+        content: TextField(
+          controller: promptController,
+          minLines: 3,
+          maxLines: 6,
+          decoration: const InputDecoration(
+            border: OutlineInputBorder(),
+          ),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(ctx, promptController.text.trim()),
+            child: const Text('Run'),
+          ),
+        ],
+      ),
+    );
+    if (prompt == null || prompt.isEmpty) return;
+
+    setState(() => _aiLoading = true);
+    try {
+      await _ensureAiModel();
+      final result = await _ai.interpretAgentPrompt(prompt);
+      final action = (result['action'] ?? 'diagnose').toString();
+      final reply = (result['reply'] ?? '').toString();
+      final patient = result['patient'] is Map
+          ? Map<String, dynamic>.from(result['patient'] as Map)
+          : <String, dynamic>{};
+      final changes = result['changes'] is List ? result['changes'] as List : const [];
+
+      if (action == 'create_patient' || action == 'update_patient' || changes.isNotEmpty) {
+        final odo = OdontogramModel();
+        for (final c in changes) {
+          if (c is! Map) continue;
+          final tooth = _normalizeTooth(c['tooth']);
+          final cat = _normalizeCategory(c['category']);
+          if (RegExp(r'^(1[1-8]|2[1-8]|3[1-8]|4[1-8])$').hasMatch(tooth) &&
+              cat.isNotEmpty && cat != 'Normal') {
+            final existing = odo.getTeethStringForCategory(cat);
+            final merged = existing.isEmpty ? tooth : '$existing, $tooth';
+            odo.setTeethForCategory(cat, merged);
+          }
+        }
+        final first = (patient['first_name'] ?? '').toString().trim();
+        final last = (patient['last_name'] ?? '').toString().trim();
+        var phone = (patient['phone'] ?? '').toString().trim();
+        if (phone.isEmpty) phone = 'AI-${DateTime.now().millisecondsSinceEpoch}';
+        final age = int.tryParse((patient['age'] ?? '').toString().trim());
+        final sex = (patient['sex'] ?? '').toString().trim();
+        final clinic = (patient['clinic'] ?? 'Dentehr Clinic').toString().trim().isEmpty
+            ? 'Dentehr Clinic'
+            : (patient['clinic'] ?? 'Dentehr Clinic').toString().trim();
+        final complaint = (patient['chief_complaint'] ?? '').toString().trim();
+        final history = (patient['medical_history'] ?? '').toString().trim();
+        final diagField = (patient['diagnosis'] ?? '').toString().trim();
+        final odoDiag = odo.toDiagnosisSummaryString();
+        final diagnosis = [
+          if (complaint.isNotEmpty) 'Complaint: $complaint',
+          if (history.isNotEmpty) 'History: $history',
+          if (diagField.isNotEmpty) diagField,
+          if (odoDiag.isNotEmpty && odoDiag != 'Oral cavity clinically normal.') odoDiag,
+        ].where((e) => e.trim().isNotEmpty).join('\n');
+
+        if (action == 'create_patient' || action == 'update_patient' || first.isNotEmpty || phone.startsWith('AI-')) {
+          await Supabase.instance.client.from('patients').upsert({
+            'phone': phone,
+            'first_name': first.isEmpty ? 'AI' : first,
+            'last_name': last,
+            if (age != null) 'age': age,
+            if (sex.isNotEmpty) 'sex': sex,
+            'diagnosis': diagnosis.isEmpty ? reply : diagnosis,
+            'treatment_plan': odo.embedInString(odo.toTreatmentPlanSummaryString()),
+            'appointment': (patient['appointment'] ?? 'AI Created').toString(),
+            'clinic': clinic,
+          }, onConflict: 'phone');
+        }
+      }
+
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(reply.isEmpty ? 'AI action completed' : reply)),
+      );
+      if (_index == 1 || _index == 0) {
+        setState(() {}); // refresh current context; lists refetch on open/manual refresh
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('AI agent error: $e'), backgroundColor: Colors.red),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _aiLoading = false);
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
     Widget getBody() {
       switch (_index) {
         case 0:
-          return DashboardScreen(onNavigateToPatients: () => setState(() => _index = 3));
-        case 1: // Appointments tab
-          return const AppointmentsScreen();
-        case 2: // Visits & payments tab
-          return const VisitsScreen();
-        case 3: // Patients tab
-        case 5: // Dental Chart tab
+          return DashboardScreen(onNavigateToPatients: () => setState(() => _index = 1));
+        case 1:
           return const ClinicPatientsScreen();
-        case 6: // Treatment tab
+        case 2:
+          return const AppointmentsScreen();
+        case 3:
+          return const VisitsScreen();
+        case 4:
           return const TreatmentScreen();
         default:
-          return _Screen(_tabs[_index].$1);
+          return DashboardScreen(onNavigateToPatients: () => setState(() => _index = 1));
       }
     }
 
-    return Scaffold(
-      body: Row(
-        children: [
-          SizedBox(
-            width: 84,
-            child: NavigationRail(
+    final fab = FloatingActionButton.extended(
+      onPressed: _aiLoading ? null : _runGlobalAiAgent,
+      icon: _aiLoading
+          ? const SizedBox(
+              width: 18,
+              height: 18,
+              child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+            )
+          : const Icon(Icons.auto_awesome),
+      label: const Text('AI'),
+      backgroundColor: kNavy,
+      foregroundColor: Colors.white,
+    );
+
+    final isWide = MediaQuery.of(context).size.width >= 900;
+    if (isWide) {
+      return Scaffold(
+        body: Row(
+          children: [
+            NavigationRail(
               selectedIndex: _index,
               onDestinationSelected: (i) => setState(() => _index = i),
               labelType: NavigationRailLabelType.all,
-              extended: false,
-              scrollable: true,
-              groupAlignment: -1.0,
-              destinations: _tabs
+              destinations: _destinations
                   .map(
-                    (t) => NavigationRailDestination(
-                      icon: Icon(t.$2, size: 20),
-                      label: Text(t.$1, style: const TextStyle(fontSize: 8)),
+                    (d) => NavigationRailDestination(
+                      icon: Icon(d.$2),
+                      label: Text(d.$1),
                     ),
                   )
                   .toList(),
             ),
-          ),
-          const VerticalDivider(width: 1),
-          Expanded(child: getBody()),
-        ],
+            const VerticalDivider(width: 1),
+            Expanded(child: getBody()),
+          ],
+        ),
+        floatingActionButton: fab,
+      );
+    }
+
+    return Scaffold(
+      body: getBody(),
+      bottomNavigationBar: NavigationBarTheme(
+        data: NavigationBarThemeData(
+          labelTextStyle: WidgetStateProperty.resolveWith((states) {
+            final selected = states.contains(WidgetState.selected);
+            return TextStyle(
+              fontSize: 10,
+              fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
+            );
+          }),
+        ),
+        child: NavigationBar(
+          selectedIndex: _index,
+          onDestinationSelected: (i) => setState(() => _index = i),
+          labelBehavior: NavigationDestinationLabelBehavior.alwaysShow,
+          destinations: _destinations
+              .map(
+                (d) => NavigationDestination(
+                  icon: Icon(d.$2),
+                  label: d.$1,
+                ),
+              )
+              .toList(),
+        ),
       ),
+      floatingActionButton: fab,
     );
   }
-}
-
-class _Screen extends StatelessWidget {
-  final String title;
-  const _Screen(this.title);
-  @override
-  Widget build(BuildContext context) => Scaffold(
-        appBar: MediaQuery.of(context).size.width >= 900 ? null : AppBar(title: Text(title)),
-        body: Center(child: Text(title)),
-      );
 }
 
 class DashboardScreen extends StatefulWidget {
@@ -195,11 +367,19 @@ class _ClinicPatientsScreenState extends State<ClinicPatientsScreen> {
   List<Map<String, dynamic>> _patients = [];
   bool _loading = false;
   String _searchQuery = '';
+  final DentalCodingAI _ai = DentalCodingAI();
+  bool _aiLoading = false;
 
   @override
   void initState() {
     super.initState();
     _fetchPatients();
+  }
+
+  @override
+  void dispose() {
+    _ai.dispose();
+    super.dispose();
   }
 
   Future<void> _fetchPatients() async {
@@ -242,6 +422,148 @@ class _ClinicPatientsScreenState extends State<ClinicPatientsScreen> {
   }
 
   void _addNewPatient() => _startVisit();
+
+
+  String _normalizeTooth(dynamic raw) {
+    final s = raw?.toString().trim() ?? '';
+    final m = RegExp(r'(1[1-8]|2[1-8]|3[1-8]|4[1-8])').firstMatch(s);
+    return m?.group(1) ?? s;
+  }
+
+  String _normalizeCategory(dynamic raw) {
+    final s = (raw?.toString() ?? '').trim().toLowerCase().replaceAll('_', ' ');
+    const map = {
+      'decayed': 'Decayed', 'caries': 'Decayed', 'cavity': 'Decayed',
+      'missing': 'Missing', 'treated': 'Treated', 'filled': 'Treated',
+      'restored': 'Treated', 'restoration': 'Treated', 'pulpitis': 'Pulpitis',
+      'abscess': 'Abscess', 'fracture': 'Fracture', 'fractured': 'Fracture',
+      'periodontitis': 'Periodontitis', 'attrition': 'Attrition',
+      'abrasion': 'Abrasion', 'root stump': 'Root Stump',
+      'impacted': 'Impacted', 'mobility': 'Mobility',
+      'recession': 'Recession', 'pocket': 'Pocket', 'normal': 'Normal',
+      'healthy': 'Normal',
+    };
+    return map[s] ?? (s.isEmpty ? '' : '${s[0].toUpperCase()}${s.substring(1)}');
+  }
+
+  Future<void> _ensureAiModel() async {
+    if (_ai.isReady) return;
+    final result = await FilePicker.platform.pickFiles(
+      type: FileType.custom,
+      allowedExtensions: const ['litertlm', 'task', 'bin'],
+      dialogTitle: 'Pick AI model file (.litertlm)',
+    );
+    if (result == null || result.files.single.path == null) {
+      throw Exception('No model file selected');
+    }
+    final path = result.files.single.path!;
+    await _ai.initModel(modelPath: path);
+  }
+
+  Future<void> _runAiAgentPrompt() async {
+    final promptController = TextEditingController();
+    final prompt = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('AI'),
+        content: TextField(
+          controller: promptController,
+          minLines: 2,
+          maxLines: 5,
+          decoration: const InputDecoration(
+            border: OutlineInputBorder(),
+          ),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(ctx, promptController.text.trim()),
+            child: const Text('Run'),
+          ),
+        ],
+      ),
+    );
+    if (prompt == null || prompt.isEmpty) return;
+
+    setState(() => _aiLoading = true);
+    try {
+      await _ensureAiModel();
+      final result = await _ai.interpretAgentPrompt(prompt);
+      final action = (result['action'] ?? 'diagnose').toString();
+      final reply = (result['reply'] ?? '').toString();
+      final patient = result['patient'] is Map
+          ? Map<String, dynamic>.from(result['patient'] as Map)
+          : <String, dynamic>{};
+      final changes = result['changes'] is List ? result['changes'] as List : const [];
+
+      if (action == 'create_patient' || action == 'update_patient') {
+        final odo = OdontogramModel();
+        for (final c in changes) {
+          if (c is! Map) continue;
+          final tooth = _normalizeTooth(c['tooth']);
+          final cat = _normalizeCategory(c['category']);
+          if (RegExp(r'^(1[1-8]|2[1-8]|3[1-8]|4[1-8])$').hasMatch(tooth) &&
+              cat.isNotEmpty && cat != 'Normal') {
+            final existing = odo.getTeethStringForCategory(cat);
+            final merged = existing.isEmpty ? tooth : '$existing, $tooth';
+            odo.setTeethForCategory(cat, merged);
+          }
+        }
+        final first = (patient['first_name'] ?? '').toString().trim();
+        final last = (patient['last_name'] ?? '').toString().trim();
+        var phone = (patient['phone'] ?? '').toString().trim();
+        if (phone.isEmpty) phone = 'AI-${DateTime.now().millisecondsSinceEpoch}';
+        final ageStr = (patient['age'] ?? '').toString().trim();
+        final age = int.tryParse(ageStr);
+        final sex = (patient['sex'] ?? '').toString().trim();
+        final clinic = (patient['clinic'] ?? _clinicDefault).toString().trim().isEmpty
+            ? _clinicDefault
+            : (patient['clinic'] ?? _clinicDefault).toString().trim();
+        final complaint = (patient['chief_complaint'] ?? '').toString().trim();
+        final history = (patient['medical_history'] ?? '').toString().trim();
+        final diagField = (patient['diagnosis'] ?? '').toString().trim();
+        final odoDiag = odo.toDiagnosisSummaryString();
+        final diagnosis = [
+          if (complaint.isNotEmpty) 'Complaint: $complaint',
+          if (history.isNotEmpty) 'History: $history',
+          if (diagField.isNotEmpty) diagField,
+          if (odoDiag.isNotEmpty && odoDiag != 'Oral cavity clinically normal.')
+            odoDiag,
+        ].where((e) => e.trim().isNotEmpty).join('\n');
+
+        await Supabase.instance.client.from('patients').upsert({
+          'phone': phone,
+          'first_name': first.isEmpty ? 'AI' : first,
+          'last_name': last,
+          if (age != null) 'age': age,
+          if (sex.isNotEmpty) 'sex': sex,
+          'diagnosis': diagnosis.isEmpty ? reply : diagnosis,
+          'treatment_plan': odo.embedInString(odo.toTreatmentPlanSummaryString()),
+          'appointment': (patient['appointment'] ?? 'AI Created').toString(),
+          'clinic': clinic,
+        }, onConflict: 'phone');
+        await _fetchPatients();
+      } else if (action == 'odontogram' || action == 'update') {
+        // fallback: show reply; odontogram-only without target patient needs context
+      }
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(reply.isEmpty ? 'AI action completed' : reply)),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('AI agent error: $e'), backgroundColor: Colors.red),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _aiLoading = false);
+    }
+  }
+
+  static const String _clinicDefault = 'Dentehr Clinic';
 
   Widget _buildPatientMetaChip(IconData icon, String label, {Color color = kNavy}) {
     return Container(
@@ -429,6 +751,13 @@ class _ClinicPatientsScreenState extends State<ClinicPatientsScreen> {
         title: const Text('Patients & Dental Charts'),
         actions: [
           IconButton(icon: const Icon(Icons.refresh), onPressed: _fetchPatients),
+          IconButton(
+            tooltip: 'AI Assistant',
+            onPressed: _aiLoading ? null : _runAiAgentPrompt,
+            icon: _aiLoading
+                ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
+                : const Icon(Icons.auto_awesome),
+          ),
           ElevatedButton.icon(
             onPressed: _addNewPatient,
             icon: const Icon(Icons.medical_services_outlined, size: 16),

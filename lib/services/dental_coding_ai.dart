@@ -93,6 +93,34 @@ class DentalCodingAI {
     return json;
   }
 
+  /// Agent mode: interpret a natural-language command that may create/update a
+  /// patient and modify odontogram findings.
+  /// Returns {"action":"create_patient|update_patient|odontogram|diagnose",
+  /// "reply":"...", "patient":{first_name,last_name,phone,age,sex,chief_complaint,
+  /// medical_history,diagnosis,appointment,clinic}, "changes":[{tooth,category},...]}
+  Future<Map<String, dynamic>> interpretAgentPrompt(String prompt) async {
+    final raw = await generate(
+      'You are an agentic dental clinic assistant. Convert the user request into an action plan.\n'
+      'User request: "$prompt"\n'
+      'Return ONLY raw JSON, no markdown. Schema:\n'
+      '{"action":"create_patient|update_patient|odontogram|diagnose","reply":"short confirmation or diagnosis",'
+      '"patient":{"first_name":"","last_name":"","phone":"","age":"","sex":"","chief_complaint":"","medical_history":"","diagnosis":"","appointment":"","clinic":""},'
+      '"changes":[{"tooth":"31","category":"Pulpitis"}]}\n'
+      'Rules: use FDI tooth numbers 11-18,21-28,31-38,41-48. '
+      'Allowed categories: Decayed,Missing,Treated,Pulpitis,Abscess,Fracture,Periodontitis,Attrition,Abrasion,Root Stump,Impacted,Mobility,Recession,Pocket,Normal. '
+      'If creating a patient, fill known patient fields and include relevant complaint/history in patient fields. '
+      'If request implies chart/diagnosis changes for teeth, include them in changes. '
+      'Use empty strings for unknown patient fields and [] for no changes.\nJSON:',
+      maxTokens: 768,
+    );
+    final json = _sanitizeJson(raw);
+    json.putIfAbsent('action', () => 'diagnose');
+    json.putIfAbsent('reply', () => raw.trim());
+    json.putIfAbsent('patient', () => <String, dynamic>{});
+    json.putIfAbsent('changes', () => <dynamic>[]);
+    return json;
+  }
+
   Map<String, dynamic> _sanitizeJson(String rawText) {
     try {
       var cleanText =

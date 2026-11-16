@@ -41,10 +41,8 @@ class _PatientVisitScreenState extends State<PatientVisitScreen> {
   static const int _lastStep = 5;
 
   final _phoneController = TextEditingController();
-  final _firstNameController = TextEditingController();
-  final _lastNameController = TextEditingController();
+  final _nameController = TextEditingController();
   final _ageController = TextEditingController();
-  final _clinicController = TextEditingController(text: 'Dentehr Clinic');
   final _appointmentController = TextEditingController();
   final _chiefComplaintController = TextEditingController();
   final _clinicalNotesController = TextEditingController();
@@ -91,10 +89,8 @@ class _PatientVisitScreenState extends State<PatientVisitScreen> {
   void dispose() {
     _phoneLookupDebounce?.cancel();
     _phoneController.dispose();
-    _firstNameController.dispose();
-    _lastNameController.dispose();
+    _nameController.dispose();
     _ageController.dispose();
-    _clinicController.dispose();
     _appointmentController.dispose();
     _chiefComplaintController.dispose();
     _clinicalNotesController.dispose();
@@ -110,10 +106,10 @@ class _PatientVisitScreenState extends State<PatientVisitScreen> {
 
   void _applyPatient(Map<String, dynamic> row) {
     _phoneController.text = row['phone']?.toString() ?? '';
-    _firstNameController.text = row['first_name']?.toString() ?? '';
-    _lastNameController.text = row['last_name']?.toString() ?? '';
+    final first = row['first_name']?.toString() ?? '';
+    final last = row['last_name']?.toString() ?? '';
+    _nameController.text = [first, last].where((p) => p.trim().isNotEmpty).join(' ').trim();
     _ageController.text = row['age']?.toString() ?? '';
-    _clinicController.text = row['clinic']?.toString() ?? 'Dentehr Clinic';
     _appointmentController.text = row['appointment']?.toString() ?? '';
     final diagnosis = OdontogramModel.cleanDisplayText(row['diagnosis']);
     _diagnosisController.text = diagnosis == 'Oral cavity clinically normal.' ? '' : diagnosis;
@@ -138,7 +134,7 @@ class _PatientVisitScreenState extends State<PatientVisitScreen> {
   }
 
   Future<void> _lookupPatientByPhone(String phone) async {
-    if (phone == _loadedPhone && _firstNameController.text.trim().isNotEmpty) return;
+    if (phone == _loadedPhone && _nameController.text.trim().isNotEmpty) return;
     try {
       final rows = await Supabase.instance.client
           .from('patients')
@@ -158,7 +154,7 @@ class _PatientVisitScreenState extends State<PatientVisitScreen> {
   }
 
   Future<void> _loadTreatments() async {
-    final clinic = _clinicController.text.trim().isEmpty ? 'Dentehr Clinic' : _clinicController.text.trim();
+    const clinic = 'Dentehr Clinic';
     setState(() {
       _loadingTreatments = true;
       _treatmentError = null;
@@ -245,8 +241,8 @@ class _PatientVisitScreenState extends State<PatientVisitScreen> {
       _showError('Enter the patient phone number.');
       return false;
     }
-    if (_firstNameController.text.trim().isEmpty || _lastNameController.text.trim().isEmpty) {
-      _showError('Enter the patient first and last name.');
+    if (_nameController.text.trim().isEmpty) {
+      _showError('Enter the patient name.');
       return false;
     }
     final age = int.tryParse(_ageController.text.trim());
@@ -256,10 +252,6 @@ class _PatientVisitScreenState extends State<PatientVisitScreen> {
     }
     if (_sex == null) {
       _showError('Select the patient sex.');
-      return false;
-    }
-    if (_clinicController.text.trim().isEmpty) {
-      _showError('Enter the clinic name.');
       return false;
     }
     return true;
@@ -300,7 +292,7 @@ class _PatientVisitScreenState extends State<PatientVisitScreen> {
 
   Future<void> _goNext() async {
     if (!_validateCurrentStep()) return;
-    if (_step == 3 && _treatmentsClinic != _clinicController.text.trim()) {
+    if (_step == 3 && _treatmentsClinic != 'Dentehr Clinic') {
       await _loadTreatments();
     }
     if (!mounted) return;
@@ -319,10 +311,11 @@ class _PatientVisitScreenState extends State<PatientVisitScreen> {
     if (!_validateCurrentStep()) return;
     setState(() => _saving = true);
     final phone = _phoneController.text.trim();
-    final firstName = _firstNameController.text.trim();
-    final lastName = _lastNameController.text.trim();
-    final clinic = _clinicController.text.trim();
-    final patientName = '$firstName $lastName'.trim();
+    const clinic = 'Dentehr Clinic';
+    final patientName = _nameController.text.trim();
+    final parts = patientName.split(RegExp(r'\s+')).where((p) => p.isNotEmpty).toList();
+    final firstName = parts.isEmpty ? '' : parts.first;
+    final lastName = parts.length <= 1 ? '' : parts.sublist(1).join(' ');
     final selected = _treatments.where((treatment) => treatment.selected).toList();
     final planItems = selected
         .map(
@@ -514,30 +507,13 @@ class _PatientVisitScreenState extends State<PatientVisitScreen> {
               ),
             ),
             const SizedBox(height: 14),
-            Row(
-              children: [
-                Expanded(
-                  child: TextField(
-                    controller: _firstNameController,
-                    textCapitalization: TextCapitalization.words,
-                    decoration: const InputDecoration(
-                      labelText: 'First name',
-                      border: OutlineInputBorder(),
-                    ),
-                  ),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: TextField(
-                    controller: _lastNameController,
-                    textCapitalization: TextCapitalization.words,
-                    decoration: const InputDecoration(
-                      labelText: 'Last name',
-                      border: OutlineInputBorder(),
-                    ),
-                  ),
-                ),
-              ],
+            TextField(
+              controller: _nameController,
+              textCapitalization: TextCapitalization.words,
+              decoration: const InputDecoration(
+                labelText: 'Name',
+                border: OutlineInputBorder(),
+              ),
             ),
             const SizedBox(height: 14),
             Row(
@@ -569,23 +545,7 @@ class _PatientVisitScreenState extends State<PatientVisitScreen> {
                 ),
               ],
             ),
-            const SizedBox(height: 14),
-            TextField(
-              controller: _clinicController,
-              decoration: const InputDecoration(
-                labelText: 'Clinic',
-                border: OutlineInputBorder(),
-              ),
-            ),
-            const SizedBox(height: 14),
-            TextField(
-              controller: _appointmentController,
-              decoration: const InputDecoration(
-                labelText: 'Appointment / visit reason',
-                hintText: 'e.g. Tooth pain, routine checkup',
-                border: OutlineInputBorder(),
-              ),
-            ),
+
           ],
         ),
       ),
@@ -627,7 +587,7 @@ class _PatientVisitScreenState extends State<PatientVisitScreen> {
               isFullScreen: true,
               patientPhone: _phoneController.text.trim(),
               appointment: _appointmentController.text.trim(),
-              clinic: _clinicController.text.trim(),
+              clinic: 'Dentehr Clinic',
               showPdfExportButton: false,
               onChanged: () => setState(() {}),
             ),
@@ -1097,7 +1057,7 @@ class _PatientVisitScreenState extends State<PatientVisitScreen> {
   }
 
   String _patientLabel() {
-    final name = '${_firstNameController.text.trim()} ${_lastNameController.text.trim()}'.trim();
+    final name = _nameController.text.trim();
     final phone = _phoneController.text.trim();
     if (name.isEmpty) return phone;
     return '$name • $phone';
