@@ -27,10 +27,68 @@ jobs:
       - name: Flutter version
         run: flutter --version
 
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/share/boost || true
+          sudo rm -rf /usr/local/lib/android/sdk/system-images || true
+          sudo rm -rf /usr/local/lib/android/sdk/emulator || true
+          df -h
+
+      - name: Install Android NDK 28.2.13676358
+        env:
+          ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
+          ANDROID_HOME: /usr/local/lib/android/sdk
+        run: |
+          set -euo pipefail
+          NDK_VERSION="28.2.13676358"
+          NDK_DIR="$ANDROID_SDK_ROOT/ndk/$NDK_VERSION"
+          if [ -f "$NDK_DIR/source.properties" ] && grep -q "$NDK_VERSION" "$NDK_DIR/source.properties"; then
+            echo "NDK $NDK_VERSION already installed"
+            exit 0
+          fi
+          mkdir -p "$ANDROID_SDK_ROOT/ndk" 2>/dev/null || sudo mkdir -p "$ANDROID_SDK_ROOT/ndk"
+          sudo rm -rf "$NDK_DIR" "$ANDROID_SDK_ROOT/ndk/android-ndk-r28c"
+          for attempt in 1 2 3; do
+            echo "Downloading NDK r28c (attempt $attempt)..."
+            if curl -fL --retry 5 --retry-delay 10 --connect-timeout 30 \
+                 -o /tmp/android-ndk.zip \
+                 "https://dl.google.com/android/repository/android-ndk-r28c-linux.zip"; then
+              break
+            fi
+            rm -f /tmp/android-ndk.zip
+            if [ "$attempt" -eq 3 ]; then
+              echo "NDK download failed after 3 attempts"
+              exit 1
+            fi
+            sleep 10
+          done
+          if ! command -v unzip >/dev/null 2>&1; then
+            sudo apt-get update && sudo apt-get install -y unzip
+          fi
+          sudo rm -rf /tmp/ndk-extract && mkdir -p /tmp/ndk-extract
+          sudo unzip -q /tmp/android-ndk.zip -d /tmp/ndk-extract
+          EXTRACTED="$(find /tmp/ndk-extract -maxdepth 1 -mindepth 1 -type d -name 'android-ndk-*' | head -1)"
+          sudo mv "$EXTRACTED" "$NDK_DIR"
+          sudo rm -rf /tmp/ndk-extract
+          sudo chmod -R a+rX "$NDK_DIR"
+          rm -f /tmp/android-ndk.zip
+          REVISION="$(awk -F'= ' '/Pkg.Revision/{print $2}' "$NDK_DIR/source.properties" | tr -d '\r')"
+          echo "Installed NDK revision: $REVISION"
+          if [ "$REVISION" != "$NDK_VERSION" ]; then
+            echo "NDK version mismatch: expected $NDK_VERSION, got $REVISION"
+            exit 1
+          fi
+          df -h
+
       - name: Install dependencies
         run: flutter pub get
 
       - name: Build release APK
+        env:
+          ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
+          ANDROID_HOME: /usr/local/lib/android/sdk
+          ANDROID_NDK_HOME: /usr/local/lib/android/sdk/ndk/28.2.13676358
+          ANDROID_NDK_ROOT: /usr/local/lib/android/sdk/ndk/28.2.13676358
         run: flutter build apk --release
 
       - name: Upload APK artifact
