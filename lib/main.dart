@@ -17,6 +17,23 @@ const String supabaseAnonKey =
 const Color kTeal = Color(0xFF0D9488);
 const Color kNavy = Color(0xFF1E3A5F);
 
+const Set<String> _namePlaceholders = {
+  '',
+  'unknown',
+  'not known',
+  'n/a',
+  'na',
+  'none',
+  'null',
+  'nil',
+  '-',
+};
+
+String _cleanNamePart(Object? value) {
+  final s = (value ?? '').toString().trim();
+  return _namePlaceholders.contains(s.toLowerCase()) ? '' : s;
+}
+
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await Supabase.initialize(url: supabaseUrl, publishableKey: supabaseAnonKey);
@@ -222,6 +239,14 @@ class _ClinicShellState extends State<ClinicShell> {
     return teeth;
   }
 
+  String _displayName(Map<String, dynamic> row) {
+    final first = _cleanNamePart(row['first_name']);
+    final last = _cleanNamePart(row['last_name']);
+    final name = [first, last].where((e) => e.isNotEmpty).join(' ').trim();
+    if (name.isNotEmpty) return name;
+    return (row['phone'] ?? '').toString().trim();
+  }
+
   Future<void> _runPatientQuery(
     String prompt,
     Map<String, dynamic> result,
@@ -262,11 +287,8 @@ class _ClinicShellState extends State<ClinicShell> {
           ? haystack.trim().isNotEmpty
           : variants.any((v) => v.isNotEmpty && haystack.contains(v));
       if (teeth.isEmpty && !textHit) continue;
-      final name = [
-        row['first_name']?.toString() ?? '',
-        row['last_name']?.toString() ?? '',
-      ].where((e) => e.trim().isNotEmpty).join(' ').trim();
-      final display = name.isEmpty ? (row['phone']?.toString() ?? 'Unknown') : name;
+      final name = _displayName(row);
+      final display = name.isEmpty ? 'Unknown' : name;
       matches.add(teeth.isEmpty ? display : '$display — $keyword: $teeth');
     }
     final label = keyword.isEmpty ? 'patients' : keyword;
@@ -402,10 +424,7 @@ class _ClinicShellState extends State<ClinicShell> {
     }
     final blocks = <String>[];
     for (final row in rows.take(10)) {
-      final fullName = [
-        row['first_name']?.toString() ?? '',
-        row['last_name']?.toString() ?? '',
-      ].where((e) => e.trim().isNotEmpty).join(' ').trim();
+      final fullName = _displayName(row);
       final phone = (row['phone'] ?? '').toString();
       final appt = (row['appointment'] ?? '').toString();
       final odo = OdontogramModel.fromPatientRecord(row);
@@ -521,8 +540,8 @@ class _ClinicShellState extends State<ClinicShell> {
               ? Map<String, dynamic>.from(entry['patient'] as Map)
               : <String, dynamic>{};
           final phone = (pmap['phone'] ?? '').toString().trim();
-          final first = (pmap['first_name'] ?? '').toString().trim();
-          final last = (pmap['last_name'] ?? '').toString().trim();
+          final first = _cleanNamePart(pmap['first_name']);
+          final last = _cleanNamePart(pmap['last_name']);
           try {
             if (phone.isNotEmpty) {
               final res = await Supabase.instance.client.from('patients').delete().eq('phone', phone).select();
@@ -580,8 +599,8 @@ class _ClinicShellState extends State<ClinicShell> {
               : <String, dynamic>{};
           final changes = entry['changes'] is List ? entry['changes'] as List : const [];
 
-          final first = (pmap['first_name'] ?? '').toString().trim();
-          final last = (pmap['last_name'] ?? '').toString().trim();
+          final first = _cleanNamePart(pmap['first_name']);
+          final last = _cleanNamePart(pmap['last_name']);
           final aiPhone = (pmap['phone'] ?? '').toString().trim();
           final age = int.tryParse((pmap['age'] ?? '').toString().trim());
           final sex = (pmap['sex'] ?? '').toString().trim();
@@ -666,8 +685,8 @@ class _ClinicShellState extends State<ClinicShell> {
               ? odo.embedInString(odo.toTreatmentPlanSummaryString())
               : existingPlan;
 
-          final existingFirst = existingRow != null ? (existingRow['first_name']?.toString().trim() ?? '') : '';
-          final existingLast = existingRow != null ? (existingRow['last_name']?.toString().trim() ?? '') : '';
+          final existingFirst = existingRow != null ? _cleanNamePart(existingRow['first_name']) : '';
+          final existingLast = existingRow != null ? _cleanNamePart(existingRow['last_name']) : '';
           final finalSex = sex.isNotEmpty ? sex : (existingRow != null ? (existingRow['sex']?.toString().trim() ?? '') : '');
           final existingAge = existingRow != null ? int.tryParse(existingRow['age']?.toString() ?? '') : null;
           final finalAge = age ?? existingAge;
@@ -917,8 +936,8 @@ class _ClinicPatientsScreenState extends State<ClinicPatientsScreen> {
   Future<void> _deletePatient(Map<String, dynamic> p) async {
     final phone = p['phone']?.toString().trim() ?? '';
     final name = [
-      p['first_name']?.toString().trim() ?? '',
-      p['last_name']?.toString().trim() ?? '',
+      _cleanNamePart(p['first_name']),
+      _cleanNamePart(p['last_name']),
     ].where((e) => e.isNotEmpty).join(' ').trim();
     final ok = await showDialog<bool>(
       context: context,
@@ -1018,8 +1037,8 @@ class _ClinicPatientsScreenState extends State<ClinicPatientsScreen> {
                   itemBuilder: (_, i) {
                     final p = filtered[i];
                     final phone = p['phone']?.toString().trim() ?? '';
-                    final firstName = p['first_name']?.toString().trim() ?? '';
-                    final lastName = p['last_name']?.toString().trim() ?? '';
+                    final firstName = _cleanNamePart(p['first_name']);
+                    final lastName = _cleanNamePart(p['last_name']);
                     final name = [firstName, lastName].where((part) => part.isNotEmpty).join(' ');
                     final age = p['age']?.toString().trim() ?? '';
                     final sex = p['sex']?.toString().trim() ?? '';

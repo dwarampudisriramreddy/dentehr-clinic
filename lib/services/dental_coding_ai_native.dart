@@ -151,7 +151,7 @@ class DentalCodingAI {
       'Do not mix different patients\' findings. '
       'If user asks to delete/remove a patient or case history, set action to "delete_patient" and provide identifying patient fields (first_name/last_name/phone) per entry. '
       'If appointment/timing is mentioned (now, in 5 minutes, tomorrow, specific time), set patient.appointment to a concrete "YYYY-MM-DD HH:mm" value computed from current datetime. '
-      'If creating/updating, fill known patient fields. Use empty strings for unknown fields and [] for no changes.\nJSON:',
+      'If creating/updating, fill known patient fields. Use empty strings (never the word "unknown" or "n/a") for fields you do not know, and [] for no changes. Use first_name only; leave last_name as an empty string when no surname is given.\nJSON:',
       maxTokens: 1024,
     );
     final json = _sanitizeJson(raw);

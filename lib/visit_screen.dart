@@ -11,6 +11,23 @@ import 'services/dental_coding_ai.dart';
 const Color kVisitTeal = Color(0xFF0D9488);
 const Color kVisitNavy = Color(0xFF1E3A5F);
 
+const Set<String> _namePlaceholders = {
+  '',
+  'unknown',
+  'not known',
+  'n/a',
+  'na',
+  'none',
+  'null',
+  'nil',
+  '-',
+};
+
+String _cleanName(Object? value) {
+  final s = (value ?? '').toString().trim();
+  return _namePlaceholders.contains(s.toLowerCase()) ? '' : s;
+}
+
 class PatientVisitScreen extends StatefulWidget {
   final Map<String, dynamic>? patient;
   const PatientVisitScreen({super.key, this.patient});
@@ -103,8 +120,8 @@ class _PatientVisitScreenState extends State<PatientVisitScreen> {
 
   void _applyPatient(Map<String, dynamic> row) {
     _phoneController.text = row['phone']?.toString() ?? '';
-    final first = row['first_name']?.toString() ?? '';
-    final last = row['last_name']?.toString() ?? '';
+    final first = _cleanName(row['first_name']);
+    final last = _cleanName(row['last_name']);
     _nameController.text = [first, last].where((p) => p.trim().isNotEmpty).join(' ').trim();
     _ageController.text = row['age']?.toString() ?? '';
     _appointmentController.text = row['appointment']?.toString() ?? '';
@@ -258,8 +275,8 @@ class _PatientVisitScreenState extends State<PatientVisitScreen> {
     const clinic = 'Dentehr Clinic';
     final patientName = _nameController.text.trim();
     final parts = patientName.split(RegExp(r'\s+')).where((p) => p.isNotEmpty).toList();
-    final firstName = parts.isEmpty ? '' : parts.first;
-    final lastName = parts.length <= 1 ? '' : parts.sublist(1).join(' ');
+    final firstName = parts.isEmpty ? '' : _cleanName(parts.first);
+    final lastName = parts.length <= 1 ? '' : _cleanName(parts.sublist(1).join(' '));
     final enabledAppts = _planAppointments.where((a) => a.enabled).toList();
     final diagnosis = _diagnosisController.text.trim().isEmpty
         ? _odontogram.toDiagnosisSummaryString()
