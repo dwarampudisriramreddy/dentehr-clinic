@@ -133,40 +133,47 @@ class _ClinicShellState extends State<ClinicShell> {
           : <String, dynamic>{};
       final changes = result['changes'] is List ? result['changes'] as List : const [];
 
-      if (action == 'create_patient' || action == 'update_patient' || changes.isNotEmpty) {
-        final odo = OdontogramModel();
-        for (final c in changes) {
-          if (c is! Map) continue;
-          final tooth = _normalizeTooth(c['tooth']);
-          final cat = _normalizeCategory(c['category']);
-          if (RegExp(r'^(1[1-8]|2[1-8]|3[1-8]|4[1-8])$').hasMatch(tooth) &&
-              cat.isNotEmpty && cat != 'Normal') {
-            final existing = odo.getTeethStringForCategory(cat);
-            final merged = existing.isEmpty ? tooth : '$existing, $tooth';
-            odo.setTeethForCategory(cat, merged);
-          }
+      final odo = OdontogramModel();
+      for (final c in changes) {
+        if (c is! Map) continue;
+        final tooth = _normalizeTooth(c['tooth']);
+        final cat = _normalizeCategory(c['category']);
+        if (RegExp(r'^(1[1-8]|2[1-8]|3[1-8]|4[1-8])$').hasMatch(tooth) &&
+            cat.isNotEmpty && cat != 'Normal') {
+          final existing = odo.getTeethStringForCategory(cat);
+          final merged = existing.isEmpty ? tooth : '$existing, $tooth';
+          odo.setTeethForCategory(cat, merged);
         }
-        final first = (patient['first_name'] ?? '').toString().trim();
-        final last = (patient['last_name'] ?? '').toString().trim();
-        var phone = (patient['phone'] ?? '').toString().trim();
-        if (phone.isEmpty) phone = 'AI-${DateTime.now().millisecondsSinceEpoch}';
-        final age = int.tryParse((patient['age'] ?? '').toString().trim());
-        final sex = (patient['sex'] ?? '').toString().trim();
-        final clinic = (patient['clinic'] ?? 'Dentehr Clinic').toString().trim().isEmpty
-            ? 'Dentehr Clinic'
-            : (patient['clinic'] ?? 'Dentehr Clinic').toString().trim();
-        final complaint = (patient['chief_complaint'] ?? '').toString().trim();
-        final history = (patient['medical_history'] ?? '').toString().trim();
-        final diagField = (patient['diagnosis'] ?? '').toString().trim();
-        final odoDiag = odo.toDiagnosisSummaryString();
+      }
+      final first = (patient['first_name'] ?? '').toString().trim();
+      final last = (patient['last_name'] ?? '').toString().trim();
+      final aiPhone = (patient['phone'] ?? '').toString().trim();
+      final age = int.tryParse((patient['age'] ?? '').toString().trim());
+      final sex = (patient['sex'] ?? '').toString().trim();
+      final clinic = (patient['clinic'] ?? 'Dentehr Clinic').toString().trim().isEmpty
+          ? 'Dentehr Clinic'
+          : (patient['clinic'] ?? 'Dentehr Clinic').toString().trim();
+      final complaint = (patient['chief_complaint'] ?? '').toString().trim();
+      final history = (patient['medical_history'] ?? '').toString().trim();
+      final diagField = (patient['diagnosis'] ?? '').toString().trim();
+      final odoDiag = odo.toDiagnosisSummaryString();
+      final hasPatientData = first.isNotEmpty ||
+          aiPhone.isNotEmpty ||
+          complaint.isNotEmpty ||
+          history.isNotEmpty ||
+          diagField.isNotEmpty ||
+          changes.isNotEmpty;
+
+      if ((action == 'create_patient' || action == 'update_patient') && hasPatientData) {
         final diagnosis = [
           if (complaint.isNotEmpty) 'Complaint: $complaint',
           if (history.isNotEmpty) 'History: $history',
           if (diagField.isNotEmpty) diagField,
           if (odoDiag.isNotEmpty && odoDiag != 'Oral cavity clinically normal.') odoDiag,
         ].where((e) => e.trim().isNotEmpty).join('\n');
-
-        if (action == 'create_patient' || action == 'update_patient' || first.isNotEmpty || phone.startsWith('AI-')) {
+        var phone = aiPhone;
+        if (phone.isEmpty) phone = 'AI-${DateTime.now().millisecondsSinceEpoch}';
+        try {
           await Supabase.instance.client.from('patients').upsert({
             'phone': phone,
             'first_name': first.isEmpty ? 'AI' : first,
@@ -178,6 +185,12 @@ class _ClinicShellState extends State<ClinicShell> {
             'appointment': (patient['appointment'] ?? 'AI Created').toString(),
             'clinic': clinic,
           }, onConflict: 'phone');
+        } catch (_) {
+          if (!mounted) return;
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text(reply.isEmpty ? 'AI responded, but could not save to server (no internet).' : '$reply\n(Could not save to server: no internet)')),
+          );
+          return;
         }
       }
 
@@ -496,33 +509,39 @@ class _ClinicPatientsScreenState extends State<ClinicPatientsScreen> {
           : <String, dynamic>{};
       final changes = result['changes'] is List ? result['changes'] as List : const [];
 
-      if (action == 'create_patient' || action == 'update_patient') {
-        final odo = OdontogramModel();
-        for (final c in changes) {
-          if (c is! Map) continue;
-          final tooth = _normalizeTooth(c['tooth']);
-          final cat = _normalizeCategory(c['category']);
-          if (RegExp(r'^(1[1-8]|2[1-8]|3[1-8]|4[1-8])$').hasMatch(tooth) &&
-              cat.isNotEmpty && cat != 'Normal') {
-            final existing = odo.getTeethStringForCategory(cat);
-            final merged = existing.isEmpty ? tooth : '$existing, $tooth';
-            odo.setTeethForCategory(cat, merged);
-          }
+      final odo = OdontogramModel();
+      for (final c in changes) {
+        if (c is! Map) continue;
+        final tooth = _normalizeTooth(c['tooth']);
+        final cat = _normalizeCategory(c['category']);
+        if (RegExp(r'^(1[1-8]|2[1-8]|3[1-8]|4[1-8])$').hasMatch(tooth) &&
+            cat.isNotEmpty && cat != 'Normal') {
+          final existing = odo.getTeethStringForCategory(cat);
+          final merged = existing.isEmpty ? tooth : '$existing, $tooth';
+          odo.setTeethForCategory(cat, merged);
         }
-        final first = (patient['first_name'] ?? '').toString().trim();
-        final last = (patient['last_name'] ?? '').toString().trim();
-        var phone = (patient['phone'] ?? '').toString().trim();
-        if (phone.isEmpty) phone = 'AI-${DateTime.now().millisecondsSinceEpoch}';
-        final ageStr = (patient['age'] ?? '').toString().trim();
-        final age = int.tryParse(ageStr);
-        final sex = (patient['sex'] ?? '').toString().trim();
-        final clinic = (patient['clinic'] ?? _clinicDefault).toString().trim().isEmpty
-            ? _clinicDefault
-            : (patient['clinic'] ?? _clinicDefault).toString().trim();
-        final complaint = (patient['chief_complaint'] ?? '').toString().trim();
-        final history = (patient['medical_history'] ?? '').toString().trim();
-        final diagField = (patient['diagnosis'] ?? '').toString().trim();
-        final odoDiag = odo.toDiagnosisSummaryString();
+      }
+      final first = (patient['first_name'] ?? '').toString().trim();
+      final last = (patient['last_name'] ?? '').toString().trim();
+      final aiPhone = (patient['phone'] ?? '').toString().trim();
+      final ageStr = (patient['age'] ?? '').toString().trim();
+      final age = int.tryParse(ageStr);
+      final sex = (patient['sex'] ?? '').toString().trim();
+      final clinic = (patient['clinic'] ?? _clinicDefault).toString().trim().isEmpty
+          ? _clinicDefault
+          : (patient['clinic'] ?? _clinicDefault).toString().trim();
+      final complaint = (patient['chief_complaint'] ?? '').toString().trim();
+      final history = (patient['medical_history'] ?? '').toString().trim();
+      final diagField = (patient['diagnosis'] ?? '').toString().trim();
+      final odoDiag = odo.toDiagnosisSummaryString();
+      final hasPatientData = first.isNotEmpty ||
+          aiPhone.isNotEmpty ||
+          complaint.isNotEmpty ||
+          history.isNotEmpty ||
+          diagField.isNotEmpty ||
+          changes.isNotEmpty;
+
+      if ((action == 'create_patient' || action == 'update_patient') && hasPatientData) {
         final diagnosis = [
           if (complaint.isNotEmpty) 'Complaint: $complaint',
           if (history.isNotEmpty) 'History: $history',
@@ -530,19 +549,28 @@ class _ClinicPatientsScreenState extends State<ClinicPatientsScreen> {
           if (odoDiag.isNotEmpty && odoDiag != 'Oral cavity clinically normal.')
             odoDiag,
         ].where((e) => e.trim().isNotEmpty).join('\n');
-
-        await Supabase.instance.client.from('patients').upsert({
-          'phone': phone,
-          'first_name': first.isEmpty ? 'AI' : first,
-          'last_name': last,
-          if (age != null) 'age': age,
-          if (sex.isNotEmpty) 'sex': sex,
-          'diagnosis': diagnosis.isEmpty ? reply : diagnosis,
-          'treatment_plan': odo.embedInString(odo.toTreatmentPlanSummaryString()),
-          'appointment': (patient['appointment'] ?? 'AI Created').toString(),
-          'clinic': clinic,
-        }, onConflict: 'phone');
-        await _fetchPatients();
+        var phone = aiPhone;
+        if (phone.isEmpty) phone = 'AI-${DateTime.now().millisecondsSinceEpoch}';
+        try {
+          await Supabase.instance.client.from('patients').upsert({
+            'phone': phone,
+            'first_name': first.isEmpty ? 'AI' : first,
+            'last_name': last,
+            if (age != null) 'age': age,
+            if (sex.isNotEmpty) 'sex': sex,
+            'diagnosis': diagnosis.isEmpty ? reply : diagnosis,
+            'treatment_plan': odo.embedInString(odo.toTreatmentPlanSummaryString()),
+            'appointment': (patient['appointment'] ?? 'AI Created').toString(),
+            'clinic': clinic,
+          }, onConflict: 'phone');
+          await _fetchPatients();
+        } catch (_) {
+          if (!mounted) return;
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text(reply.isEmpty ? 'AI responded, but could not save to server (no internet).' : '$reply\n(Could not save to server: no internet)')),
+          );
+          return;
+        }
       } else if (action == 'odontogram' || action == 'update') {
         // fallback: show reply; odontogram-only without target patient needs context
       }
@@ -554,8 +582,14 @@ class _ClinicPatientsScreenState extends State<ClinicPatientsScreen> {
       }
     } catch (e) {
       if (mounted) {
+        final msg = e.toString();
+        final friendly = msg.contains('Failed host lookup') ||
+                msg.contains('SocketException') ||
+                msg.contains('ClientException')
+            ? 'No internet connection to clinic server. AI model can run offline, but creating/updating patients needs network.'
+            : 'AI error: $msg';
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('AI agent error: $e'), backgroundColor: Colors.red),
+          SnackBar(content: Text(friendly), backgroundColor: Colors.red),
         );
       }
     } finally {
@@ -846,8 +880,14 @@ class _PatientDentalChartFullScreenPageState
       }
     } catch (e) {
       if (mounted) {
+        final msg = e.toString();
+        final friendly = msg.contains('Failed host lookup') ||
+                msg.contains('SocketException') ||
+                msg.contains('ClientException')
+            ? 'No internet connection to clinic server. AI model can run offline, but creating/updating patients needs network.'
+            : 'AI error: $msg';
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Error saving changes: $e'), backgroundColor: Colors.red),
+          SnackBar(content: Text(friendly), backgroundColor: Colors.red),
         );
       }
     } finally {
