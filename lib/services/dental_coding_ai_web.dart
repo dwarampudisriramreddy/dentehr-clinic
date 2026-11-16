@@ -2,6 +2,8 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:js_interop';
 
+import 'agent_json.dart';
+
 @JS('dentalWebAiInit')
 external JSPromise<JSAny?> _dentalWebAiInit(JSString modelId, JSFunction? onProgress);
 
@@ -167,12 +169,17 @@ class DentalCodingAI {
       'If the user asks about a SPECIFIC named patient (e.g. "what are the findings in Suresh", "show Suresh treatment plan", "details of Suresh", "what teeth need restoration for Suresh"), set action to "patient_lookup", set query.patient_name to that name, and set "patients":[]. '
       'If multiple patients are mentioned, return one entry per patient and assign ONLY that patient\'s findings/teeth to their changes. '
       'Do not mix different patients\' findings. '
+      'ALWAYS set patient.first_name to the name used in the request; never leave it empty when the user names a patient. '
       'If user asks to delete/remove a patient or case history, set action to "delete_patient" and provide identifying patient fields (first_name/last_name/phone) per entry. '
       'If appointment/timing is mentioned (now, in 5 minutes, tomorrow, specific time), set patient.appointment to a concrete "YYYY-MM-DD HH:mm" value computed from current datetime. '
       'If creating/updating, fill known patient fields. Use empty strings (never the word "unknown" or "n/a") for fields you do not know, and [] for no changes. Use first_name only; leave last_name as an empty string when no surname is given.\nJSON:',
       maxTokens: 1024,
     );
-    final json = _sanitizeJson(raw);
+    var json = _sanitizeJson(raw);
+    if (json['error'] != null) {
+      final salvaged = salvageAgentJson(raw);
+      if (salvaged.isNotEmpty) json = salvaged;
+    }
     json.putIfAbsent('action', () => 'diagnose');
     json.putIfAbsent('reply', () => raw.trim());
     if (json['patients'] is! List) {

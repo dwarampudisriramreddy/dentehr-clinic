@@ -34,6 +34,78 @@ String _cleanNamePart(Object? value) {
   return _namePlaceholders.contains(s.toLowerCase()) ? '' : s;
 }
 
+const Set<String> _promptNameStopwords = {
+  'a', 'an', 'the', 'and', 'or', 'also', 'then', 'with', 'has', 'have', 'had',
+  'having', 'for', 'of', 'in', 'on', 'to', 'at', 'is', 'are', 'was', 'were',
+  'be', 'as', 'by', 'from', 'please', 'now', 'mark', 'record', 'log', 'add',
+  'update', 'set', 'change', 'show', 'tell', 'me', 'what', 'which', 'who',
+  'how', 'many', 'much', 'count', 'list', 'give', 'find', 'patient',
+  'patients', 'case', 'cases', 'teeth', 'tooth', 'upper', 'lower', 'right',
+  'left', 'anterior', 'posterior', 'quadrant', 'mouth', 'oral', 'dental',
+  'dentistry', 'caries', 'cavity', 'cavities', 'decay', 'decayed', 'missing',
+  'filled', 'filling', 'fillings', 'restoration', 'restorations', 'restored',
+  'restore', 'rct', 'root', 'canal', 'endodontic', 'extraction', 'extract',
+  'extracted', 'implant', 'implants', 'crown', 'crowns', 'bridge', 'bridges',
+  'fpd', 'pulpitis', 'abscess', 'fracture', 'fractured', 'periodontitis',
+  'attrition', 'abrasion', 'stump', 'impacted', 'mobility', 'recession',
+  'pocket', 'normal', 'healthy', 'composite', 'amalgam', 'gic', 'ceramic',
+  'zirconia', 'porcelain', 'need', 'needs', 'needed', 'require', 'requires',
+  'treatment', 'treated', 'plan', 'findings', 'finding', 'diagnosis',
+  'history', 'appointment', 'schedule', 'book', 'tomorrow', 'today', 'am',
+  'pm', 'o', 'clock', 'one', 'two', 'three', 'four', 'five', 'six', 'seven',
+  'eight', 'nine', 'ten', 'no', 'number', 'numbers', 'both', 'all',
+  'some', 'few', 'these', 'those', 'this', 'that', 'them', 'their', 'his',
+  'her', 's', 'ts', 'doctor', 'dr',
+};
+
+/// Extract likely patient names from a free-text request, in order.
+List<String> _promptNames(String prompt) {
+  final tokens = prompt
+      .toLowerCase()
+      .split(RegExp(r"[^a-z']+"))
+      .where((t) => t.isNotEmpty);
+  final names = <String>[];
+  for (final t in tokens) {
+    if (t.length < 2) continue;
+    if (_promptNameStopwords.contains(t)) continue;
+    if (RegExp(r'^\d+$').hasMatch(t)) continue;
+    if (!names.contains(t)) names.add(t);
+  }
+  return names;
+}
+
+/// Fill missing patient.first_name values using names parsed from the prompt.
+void _patchEntryNames(List<dynamic> entries, List<String> promptNames) {
+  if (promptNames.isEmpty) return;
+  final used = <String>{};
+  for (final e in entries) {
+    if (e is Map && e['patient'] is Map) {
+      final n = _cleanNamePart((e['patient'] as Map)['first_name']).toLowerCase();
+      if (n.isNotEmpty) used.add(n);
+    }
+  }
+  var idx = 0;
+  for (final e in entries) {
+    if (e is! Map) continue;
+    final p = e['patient'] is Map
+        ? Map<String, dynamic>.from(e['patient'] as Map)
+        : <String, dynamic>{};
+    if (_cleanNamePart(p['first_name']).isEmpty) {
+      while (idx < promptNames.length &&
+          used.contains(promptNames[idx].toLowerCase())) {
+        idx++;
+      }
+      if (idx < promptNames.length) {
+        final raw = promptNames[idx];
+        p['first_name'] = raw.isEmpty ? raw : '${raw[0].toUpperCase()}${raw.substring(1)}';
+        used.add(raw.toLowerCase());
+        idx++;
+      }
+    }
+    e['patient'] = p;
+  }
+}
+
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await Supabase.initialize(url: supabaseUrl, publishableKey: supabaseAnonKey);
@@ -512,7 +584,10 @@ class _ClinicShellState extends State<ClinicShell> {
       final result = await _ai.interpretAgentPrompt(prompt);
       var action = (result['action'] ?? 'diagnose').toString();
       final reply = (result['reply'] ?? '').toString();
-      final patientsRaw = result['patients'] is List ? result['patients'] as List : const [];
+      final patientsRaw = result['patients'] is List
+          ? List<dynamic>.from(result['patients'] as List)
+          : <dynamic>[];
+      _patchEntryNames(patientsRaw, _promptNames(prompt));
 
       final promptLower = prompt.toLowerCase();
       final promptName = _nameFromPrompt(prompt);
@@ -523,6 +598,11 @@ class _ClinicShellState extends State<ClinicShell> {
       final looksLikeQuery = RegExp(
         r'\b(how many|how much|which|what are|what is|list|who|count|are there|do we have|show me|tell me|give me|findings|teeth)\b',
       ).hasMatch(promptLower);
+      final hasChanges = patientsRaw.any((e) =>
+          e is Map && e['changes'] is List && (e['changes'] as List).isNotEmpty);
+      if (action == 'diagnose' && hasChanges) {
+        action = 'odontogram';
+      }
       if (action == 'diagnose' && !hasMutation) {
         if (promptName.isNotEmpty) {
           action = 'patient_lookup';
