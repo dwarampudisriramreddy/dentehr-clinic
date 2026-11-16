@@ -6,8 +6,8 @@ plugins {
 
 android {
     namespace = "com.ram.dentehr_clinic"
-    compileSdk = flutter.compileSdkVersion
-    ndkVersion = "27.0.12077973"
+    compileSdk = 36
+    ndkVersion = "28.2.13676358"
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
@@ -19,7 +19,7 @@ android {
         applicationId = "com.ram.dentehr_clinic"
         // LiteRT-LM/flutter_edge_ai requires minSdk 30 and arm64-v8a for .litertlm.
         minSdk = 30
-        targetSdk = flutter.targetSdkVersion
+        targetSdk = 36
         ndk {
             abiFilters += listOf("arm64-v8a")
         }
