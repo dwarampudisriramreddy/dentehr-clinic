@@ -138,13 +138,14 @@ class DentalCodingAI {
       'Convert the user request into an action plan.\n'
       'User request: "$prompt"\n'
       'Return ONLY raw JSON, no markdown. Schema:\n'
-      '{"action":"create_patient|update_patient|odontogram|diagnose","reply":"short confirmation/diagnosis",'
+      '{"action":"create_patient|update_patient|delete_patient|odontogram|diagnose","reply":"short confirmation/diagnosis",'
       '"patients":[{"patient":{"first_name":"","last_name":"","phone":"","age":"","sex":"","chief_complaint":"","medical_history":"","diagnosis":"","appointment":"","clinic":""},'
       '"changes":[{"tooth":"31","category":"Pulpitis"}]}]}\n'
       'Rules: use FDI tooth numbers 11-18,21-28,31-38,41-48. '
       'Allowed categories: Decayed,Missing,Treated,Pulpitis,Abscess,Fracture,Periodontitis,Attrition,Abrasion,Root Stump,Impacted,Mobility,Recession,Pocket,Normal. '
       'If multiple patients are mentioned, return one entry per patient and assign ONLY that patient\'s findings/teeth to their changes. '
       'Do not mix different patients\' findings. '
+      'If user asks to delete/remove a patient or case history, set action to "delete_patient" and provide identifying patient fields (first_name/last_name/phone) per entry. '
       'If appointment/timing is mentioned (now, in 5 minutes, tomorrow, specific time), set patient.appointment to a concrete "YYYY-MM-DD HH:mm" value computed from current datetime. '
       'If creating/updating, fill known patient fields. Use empty strings for unknown fields and [] for no changes.\nJSON:',
       maxTokens: 1024,

@@ -161,85 +161,121 @@ class _ClinicShellState extends State<ClinicShell> {
       final reply = (result['reply'] ?? '').toString();
       final patientsRaw = result['patients'] is List ? result['patients'] as List : const [];
 
-      var savedCount = 0;
-      var failedSaves = 0;
-      for (final entry in patientsRaw) {
-        if (entry is! Map) continue;
-        final pmap = entry['patient'] is Map
-            ? Map<String, dynamic>.from(entry['patient'] as Map)
-            : <String, dynamic>{};
-        final changes = entry['changes'] is List ? entry['changes'] as List : const [];
+      if (action == 'delete_patient') {
+        var deletedCount = 0;
+        var failedCount = 0;
+        for (final entry in patientsRaw) {
+          if (entry is! Map) continue;
+          final pmap = entry['patient'] is Map
+              ? Map<String, dynamic>.from(entry['patient'] as Map)
+              : <String, dynamic>{};
+          final phone = (pmap['phone'] ?? '').toString().trim();
+          final first = (pmap['first_name'] ?? '').toString().trim();
+          final last = (pmap['last_name'] ?? '').toString().trim();
+          try {
+            if (phone.isNotEmpty) {
+              await Supabase.instance.client.from('patients').delete().eq('phone', phone);
+              deletedCount++;
+            } else if (first.isNotEmpty || last.isNotEmpty) {
+              var q = Supabase.instance.client.from('patients').delete();
+              if (first.isNotEmpty) q = q.ilike('first_name', first);
+              if (last.isNotEmpty) q = q.ilike('last_name', last);
+              await q;
+              deletedCount++;
+            } else {
+              failedCount++;
+            }
+          } catch (_) {
+            failedCount++;
+          }
+        }
+        if (!mounted) return;
+        var msg = reply.isEmpty ? 'Delete requested' : reply;
+        if (deletedCount > 0) msg = '$msg (deleted $deletedCount)';
+        if (failedCount > 0) msg = '$msg (failed $failedCount)';
+        if (deletedCount == 0 && failedCount == 0) msg = '$msg (nothing to delete)';
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+        if (deletedCount > 0) setState(() => _index = 1);
+      } else {
+        var savedCount = 0;
+        var failedSaves = 0;
+        final isSaveAction = action == 'create_patient' || action == 'update_patient' || action == 'odontogram';
+        for (final entry in patientsRaw) {
+          if (entry is! Map) continue;
+          final pmap = entry['patient'] is Map
+              ? Map<String, dynamic>.from(entry['patient'] as Map)
+              : <String, dynamic>{};
+          final changes = entry['changes'] is List ? entry['changes'] as List : const [];
 
-        final odo = OdontogramModel();
-        for (final c in changes) {
-          if (c is! Map) continue;
-          final tooth = _normalizeTooth(c['tooth']);
-          final cat = _normalizeCategory(c['category']);
-          if (RegExp(r'^(1[1-8]|2[1-8]|3[1-8]|4[1-8])$').hasMatch(tooth) &&
-              cat.isNotEmpty && cat != 'Normal') {
-            final existing = odo.getTeethStringForCategory(cat);
-            final merged = existing.isEmpty ? tooth : '$existing, $tooth';
-            odo.setTeethForCategory(cat, merged);
+          final odo = OdontogramModel();
+          for (final c in changes) {
+            if (c is! Map) continue;
+            final tooth = _normalizeTooth(c['tooth']);
+            final cat = _normalizeCategory(c['category']);
+            if (RegExp(r'^(1[1-8]|2[1-8]|3[1-8]|4[1-8])$').hasMatch(tooth) &&
+                cat.isNotEmpty && cat != 'Normal') {
+              final existing = odo.getTeethStringForCategory(cat);
+              final merged = existing.isEmpty ? tooth : '$existing, $tooth';
+              odo.setTeethForCategory(cat, merged);
+            }
+          }
+
+          final first = (pmap['first_name'] ?? '').toString().trim();
+          final last = (pmap['last_name'] ?? '').toString().trim();
+          final aiPhone = (pmap['phone'] ?? '').toString().trim();
+          final age = int.tryParse((pmap['age'] ?? '').toString().trim());
+          final sex = (pmap['sex'] ?? '').toString().trim();
+          final clinic = (pmap['clinic'] ?? 'Dentehr Clinic').toString().trim().isEmpty
+              ? 'Dentehr Clinic'
+              : (pmap['clinic'] ?? 'Dentehr Clinic').toString().trim();
+          final complaint = (pmap['chief_complaint'] ?? '').toString().trim();
+          final history = (pmap['medical_history'] ?? '').toString().trim();
+          final diagField = (pmap['diagnosis'] ?? '').toString().trim();
+          final odoDiag = odo.toDiagnosisSummaryString();
+          final hasData = first.isNotEmpty || aiPhone.isNotEmpty || complaint.isNotEmpty ||
+              history.isNotEmpty || diagField.isNotEmpty || changes.isNotEmpty;
+          final shouldSave = isSaveAction && hasData;
+          if (!shouldSave) continue;
+
+          final diagnosis = [
+            if (complaint.isNotEmpty) 'Complaint: $complaint',
+            if (history.isNotEmpty) 'History: $history',
+            if (diagField.isNotEmpty) diagField,
+            if (odoDiag.isNotEmpty && odoDiag != 'Oral cavity clinically normal.') odoDiag,
+          ].where((e) => e.trim().isNotEmpty).join('\n');
+          var phone = aiPhone;
+          if (phone.isEmpty) phone = 'AI-${DateTime.now().millisecondsSinceEpoch}-$savedCount';
+          final apptRaw = (pmap['appointment'] ?? '').toString().trim();
+          final appointment = apptRaw.isEmpty ? 'AI Created' : _normalizeAppointment(apptRaw);
+
+          try {
+            await Supabase.instance.client.from('patients').upsert({
+              'phone': phone,
+              'first_name': first.isEmpty ? 'AI' : first,
+              'last_name': last,
+              if (age != null) 'age': age,
+              if (sex.isNotEmpty) 'sex': sex,
+              'diagnosis': diagnosis.isEmpty ? reply : diagnosis,
+              'treatment_plan': odo.embedInString(odo.toTreatmentPlanSummaryString()),
+              'appointment': appointment,
+              'clinic': clinic,
+            }, onConflict: 'phone');
+            savedCount++;
+          } catch (_) {
+            failedSaves++;
           }
         }
 
-        final first = (pmap['first_name'] ?? '').toString().trim();
-        final last = (pmap['last_name'] ?? '').toString().trim();
-        final aiPhone = (pmap['phone'] ?? '').toString().trim();
-        final age = int.tryParse((pmap['age'] ?? '').toString().trim());
-        final sex = (pmap['sex'] ?? '').toString().trim();
-        final clinic = (pmap['clinic'] ?? 'Dentehr Clinic').toString().trim().isEmpty
-            ? 'Dentehr Clinic'
-            : (pmap['clinic'] ?? 'Dentehr Clinic').toString().trim();
-        final complaint = (pmap['chief_complaint'] ?? '').toString().trim();
-        final history = (pmap['medical_history'] ?? '').toString().trim();
-        final diagField = (pmap['diagnosis'] ?? '').toString().trim();
-        final odoDiag = odo.toDiagnosisSummaryString();
-        final hasData = first.isNotEmpty || aiPhone.isNotEmpty || complaint.isNotEmpty ||
-            history.isNotEmpty || diagField.isNotEmpty || changes.isNotEmpty;
-        final shouldSave = hasData && (action == 'create_patient' || action == 'update_patient' ||
-            first.isNotEmpty || aiPhone.isNotEmpty || changes.isNotEmpty);
-        if (!shouldSave) continue;
-
-        final diagnosis = [
-          if (complaint.isNotEmpty) 'Complaint: $complaint',
-          if (history.isNotEmpty) 'History: $history',
-          if (diagField.isNotEmpty) diagField,
-          if (odoDiag.isNotEmpty && odoDiag != 'Oral cavity clinically normal.') odoDiag,
-        ].where((e) => e.trim().isNotEmpty).join('\n');
-        var phone = aiPhone;
-        if (phone.isEmpty) phone = 'AI-${DateTime.now().millisecondsSinceEpoch}-$savedCount';
-        final apptRaw = (pmap['appointment'] ?? '').toString().trim();
-        final appointment = apptRaw.isEmpty ? 'AI Created' : _normalizeAppointment(apptRaw);
-
-        try {
-          await Supabase.instance.client.from('patients').upsert({
-            'phone': phone,
-            'first_name': first.isEmpty ? 'AI' : first,
-            'last_name': last,
-            if (age != null) 'age': age,
-            if (sex.isNotEmpty) 'sex': sex,
-            'diagnosis': diagnosis.isEmpty ? reply : diagnosis,
-            'treatment_plan': odo.embedInString(odo.toTreatmentPlanSummaryString()),
-            'appointment': appointment,
-            'clinic': clinic,
-          }, onConflict: 'phone');
-          savedCount++;
-        } catch (_) {
-          failedSaves++;
+        if (!mounted) return;
+        var msg = reply.isEmpty ? 'AI action completed' : reply;
+        if (savedCount > 0) msg = '$msg (saved $savedCount)';
+        if (failedSaves > 0) msg = '$msg (could not save $failedSaves - no internet/server)';
+        if (savedCount == 0 && failedSaves == 0 && patientsRaw.isNotEmpty && isSaveAction) {
+          msg = '$msg (not saved - missing patient details)';
         }
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+        if (savedCount > 0) setState(() => _index = 1);
       }
-
-      if (!mounted) return;
-      var msg = reply.isEmpty ? 'AI action completed' : reply;
-      if (savedCount > 0) msg = '$msg (saved $savedCount)';
-      if (failedSaves > 0) msg = '$msg (could not save $failedSaves - no internet/server)';
-      if (savedCount == 0 && failedSaves == 0 && patientsRaw.isNotEmpty &&
-          (action == 'create_patient' || action == 'update_patient')) {
-        msg = '$msg (not saved - missing patient details)';
-      }
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
-      if (savedCount > 0) setState(() => _index = 1);
     } catch (e) {
       if (mounted) {
         final em = e.toString();
@@ -433,6 +469,41 @@ class _ClinicPatientsScreenState extends State<ClinicPatientsScreen> {
     ).then((_) => _fetchPatients());
   }
 
+  Future<void> _deletePatient(Map<String, dynamic> p) async {
+    final phone = p['phone']?.toString() ?? '';
+    final name = [
+      p['first_name']?.toString().trim() ?? '',
+      p['last_name']?.toString().trim() ?? '',
+    ].where((e) => e.isNotEmpty).join(' ').trim();
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Delete case history?'),
+        content: Text('Delete ${name.isEmpty ? 'this patient' : name}${phone.isEmpty ? '' : ' ($phone)'}? This cannot be undone.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            style: FilledButton.styleFrom(backgroundColor: Colors.red),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true || !mounted) return;
+    try {
+      await Supabase.instance.client.from('patients').delete().eq('phone', phone);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Case history deleted')));
+      _fetchPatients();
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Delete failed: $e'), backgroundColor: Colors.red),
+      );
+    }
+  }
+
   Widget _buildPatientMetaChip(IconData icon, String label, {Color color = kNavy}) {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
@@ -571,6 +642,12 @@ class _ClinicPatientsScreenState extends State<ClinicPatientsScreen> {
                                         clinic: p['clinic']?.toString() ?? '',
                                       );
                                     },
+                                  ),
+                                  IconButton(
+                                    icon: const Icon(Icons.delete_outline, color: Colors.red, size: 20),
+                                    tooltip: 'Delete case history',
+                                    visualDensity: VisualDensity.compact,
+                                    onPressed: () => _deletePatient(p),
                                   ),
                                   const Icon(Icons.chevron_right, color: Colors.grey),
                                 ],
