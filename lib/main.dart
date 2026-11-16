@@ -407,6 +407,8 @@ class _ClinicShellState extends State<ClinicShell> {
         fullName.isEmpty ? (phone.isEmpty ? 'Unknown patient' : phone) : fullName,
         if (phone.isNotEmpty) 'Phone: $phone',
         if (appt.isNotEmpty) 'Appointment: $appt',
+        'DMFT: ${odo.dmftIndex} (Abnormal: ${odo.abnormalTeeth.length}, '
+            'Missing: ${odo.missingTeeth.length}, Treated: ${odo.treatedTeeth.length})',
         'Findings: ${findingDisplay.isEmpty ? 'None recorded' : findingDisplay}',
         'Treatment plan: ${planDisplay.isEmpty ? 'None recorded' : planDisplay}',
       ].join('\n'));
